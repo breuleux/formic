@@ -1,0 +1,217 @@
+
+require:
+    lib
+
+;; SECTION
+;; PRINTING
+
+(<>) = [_, x] ->
+    toprint = repr[x]
+    pre = String[Char[27]] ++ "[?0;7y+h "
+    post = String[Char[7]]
+    pr! (++)[pre, div.ug[htmlpr toprint], post]
+
+
+join = [j] -> xs ->
+    items =
+        V enumerate[xs] each
+            [0, x] -> x
+            [_, x] -> j ++ x
+    if (items.length == 0):
+        ""
+    else:
+        (++) items
+
+
+textpr =
+
+    Number n -> String[n]
+    String s -> (++)["'", s, "'"]
+    Symbol s -> String[s]
+    Char c -> String[c]
+    #special[x] -> String[x]
+
+    #range [s, e] -> (++)[textpr s, " .. ", textpr e]
+
+    #pair [head, tail] ->
+        (++)[textpr head, " :: ", textpr tail]
+    #mapping [head, tail] ->
+        (++)[textpr head, "  => ", textpr tail]
+
+    #hybrid [#vector[*v], #assoc[*a]] ->
+        vs = v each textpr
+        as = a each #pair [x, y] ->
+               textpr #mapping[x, y]
+        (++)["[", join[", "](chain[vs, as]), "]"]
+
+    #vector v ->
+        textpr #hybrid[v, #assoc[]]
+    #assoc a ->
+        textpr #hybrid[#vector[], a]
+
+    #set [*s] ->
+        ss = s each textpr
+        (++)["{", join[", "] ss, "}"]
+    #table [*t] ->
+        ts = t each #pair [x, y] ->
+               textpr #mapping[x, y]
+        (++)["{", join[", "] ts, "}"]
+
+    #struct [name, *elements] ->
+        (++)["#", textpr name, textpr (#vector elements)]
+
+    #struct_type [name] ->
+        (++)["#", textpr name]
+
+
+q = String['"]
+
+maketag = [tag, classes = {}] ->
+    Symbol cls ->
+        maketag[tag, classes | {String[cls]}]
+    String cls ->
+        maketag[tag, classes | {cls}]
+    Set more_classes ->
+        maketag[tag, classes | (S more_classes each c -> String[c])]
+    Vector children ->
+        (++)["<", tag, " class=", q
+             join[" "] classes
+             q, ">"
+             join[""] children each c -> String[c]
+             "</", tag, ">"]
+
+html = Symbol tag -> maketag[String[tag], {}]
+span = maketag["span"]
+div = maketag["div"]
+
+htmlpr =
+
+    Number n -> span.num[n]
+    String s -> span.str[s]
+    Symbol s -> span.sym[s]
+    Char c -> span.char[c]
+    #special[x] -> span.special(x)[x]
+
+    #range [s, e] ->
+        span.range[htmlpr s, htmlpr e]
+
+    #pair [head, tail] ->
+        match tail:
+            #pair p ->
+                span.pair[htmlpr head, htmlpr tail]
+            #special [.nil] ->
+                span.pair[htmlpr head, htmlpr tail]
+            x ->
+                span.pair[htmlpr head, span.improper[htmlpr tail]]
+
+    #mapping [key, value] ->
+        span.mapping[htmlpr key, htmlpr value]
+
+    #hybrid [#vector[*v], #assoc[*a]] ->
+        vs = v each htmlpr
+        as = a each #pair [x, y] ->
+               htmlpr #mapping[x, y]
+        elems = V chain[vs, as]
+        span.sequence(if[elems.length == 0, .empty, ""]) elems
+
+    #vector v ->
+        htmlpr #hybrid[v, #assoc[]]
+    #assoc a ->
+        htmlpr #hybrid[#vector[], a]
+
+    #set [*s] ->
+        ss = s each htmlpr
+        span.set.unordered(V ss)
+    #table [*t] ->
+        ts = t each #pair [x, y] ->
+               htmlpr #mapping[x, y]
+        span.table.unordered(V ts)
+
+    #struct [name, *elements] ->
+        span.struct("struct_" ++ String[name])!
+            htmlpr name
+            htmlpr (#vector elements)
+
+    #struct_type [name] ->
+        span.struct_type[name]
+
+    #regexp [s] ->
+        span.regexp[s]
+
+    #prop [x, *props] ->
+        htmlpr x
+
+    #attr [attributes, *children] ->
+        span(Set attributes)[*children]
+
+
+;; SECTION
+;; REGEXP
+
+group = [x] -> (++)["(?:", x, ")"]
+
+_Rxe =
+
+    .any ->
+        "."
+    .alpha ->
+        "[a-zA-Z]"
+    .digit ->
+        "[0-9]"
+    .start ->
+        "^"
+    .end ->
+        "$"
+
+    #juxt [.maybe, expr] ->
+        group[_Rxe expr] ++ "?"
+    #juxt [.choice, #value [things]] ->
+        group! join["|"] things each c -> Rx.quote[String[c]]
+    #juxt [.not, #value [things]] ->
+        s = things.replace["^" => "\\^", "-" => "\\-"]
+        group! (++)["[^", s ,"]"]
+    #juxt [.except, #value [things]] ->
+        s = things.replace["^" => "\\^", "-" => "\\-"]
+        group! (++)["[^", s ,"]", "|$"]
+
+    String s ->
+        Rx.quote[s]
+    #value [String s] ->
+        Rx.quote[s]
+    #value [Char c] ->
+        Rx.quote[String[c]]
+    #begin [*elements] ->
+        (++) V(elements each _Rxe)
+    #curly [*elements] ->
+        (++)["(", _Rxe #begin(elements), ")"]
+
+    #oper [.(*), element, times] ->
+        sfx =
+            match times:
+                #value [Hole _] ->
+                     "*"
+                #value [Number n] ->
+                     (++)["{", String[n], "}"]
+                #oper [.(..), #value[Hole _], #value[Number max]] ->
+                     (++)["{,", String[max], "}"]
+                #oper [.(..), #value[Number min], #value[Hole _]] ->
+                     (++)["{", String[min], ",}"]
+                #oper [.(..), #value[Number min], #value[Number max]] ->
+                     (++)["{", String[min], ",", String[max], "}"]
+        (group! _Rxe element) ++ sfx
+
+    #oper [.(+), element, #value[Hole _]] ->
+        (group! _Rxe element) ++ "+"
+    #oper [.(|), a, b] ->
+        group! (++)[_Rxe a, "|", _Rxe b]
+    #oper [.(..), a, b] ->
+        (++)["[", _Rxe a, "-", _Rxe b, "]"]
+
+Rxe = x -> Rx(_Rxe x)
+
+
+provide:
+    join
+    (<>), textpr, htmlpr
+    Rxe
+
