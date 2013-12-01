@@ -1,0 +1,94 @@
+
+require:
+    lib
+    common
+    parser
+
+cr = "\n"[0]
+
+Source = [text, url = false] ->
+    lines = V enumerate[chain[text, "\n"[0] :: nil]] each [i, c] ->
+        if (c == cr):
+            i
+        else:
+            (false, continue)
+
+    self =
+        [r] -> text[r]
+        .text -> text
+        .url -> url
+        .linecol -> [pos] ->
+            if (pos < 0 or pos > text.length):
+                raise #outofbounds[pos, self]
+            current = -1
+            do enumerate[lines, 1] each [i, n] ->
+                if (pos == n):
+                    break [i + 1, 0]
+                elif (pos < n):
+                    break [i, pos - current]
+                current := n
+        r when (r == repr) ->
+            #struct[repr[.Source], repr[url]]
+
+    self
+
+
+Location = [source, Range [start, end]] ->
+
+    self =
+        .source -> source
+        .start -> start
+        .end -> end
+
+        .text -> source[start..end]
+
+        .linecol ->
+            incl_end = end - 1
+            [l1, c1] = source.linecol[start]
+            if (start > incl_end):
+                [[l1, c1], false]
+            else:
+                [[l1, c1], source.linecol[incl_end]]
+
+        .ref ->
+            match self.linecol:
+                [[l1, c1], false _] ->
+                    (++)[String[l1], ":", String[c1]]
+                [[l1, c1], [l2, c2]] ->
+                    if (l1 == l2 and c1 == c2):
+                        (++)[String[l1], ":", String[c1]]
+                    elif (l1 == l2):
+                        (++)[String[l1], ":", String[c1], "-", String[c2]]
+                    else:
+                        (++)[String[l1], ":", String[c1], "-", String[l2], ":", String[c2]]
+
+        .at_start -> Location[source, start .. start]
+        .at_end -> Location[source, end .. end]
+
+        #dispatch[0, x] when (x == (+)) -> [loc2] ->
+            merge_locations[self, loc2]
+
+    self
+
+
+merge_locations = Vector locations ->
+    if (locations.length == 0):
+        Location[false, 0..0]
+    else:
+        start = min locations each loc -> loc.start
+        end = max locations each loc -> loc.end
+        Location[locations[0].source, start..end]
+
+
+s = Source["what is up\nwonky\n\n\ndoo"]
+
+<> s
+<> s.text
+
+loc1 = Location[s, 1..3]
+loc2 = Location[s, 8..17]
+
+
+<> loc1.ref
+<> loc2.ref
+<> (loc1 + loc2).ref
