@@ -1,0 +1,122 @@
+
+import:
+  sys
+
+repl = {
+  (+) = "__plus"
+  (-) = "__minus"
+  (*) = "__times"
+  (/) = "__div"
+  (|) = "__union"
+  (&) = "__inter"
+  (::) = "cons"
+  (..) = "__range"
+  (++) = "__plusplus"
+  (==) = "equal?"
+  (=<) = "<="
+  (>=) = ">="
+  (is) = "eq?"
+  each = "__generate"
+  raise = "__raise"
+  do = "exhaust"
+}
+
+
+graph = [data] ->
+  G = [ast] ->
+    match ast:
+        #extra[#require[x]] ->
+            data?"require" := x
+            ""
+        #extra[#provide[x]] ->
+            items = x map x ->
+                [data?"exportable"?x, x]
+            data?"provide" := [.provide, ["rename-out", *items]]
+            ""
+        #extra[x] ->
+            raise Exception[x]
+
+        #declaring[variables, body] when data?"toplevel" ->
+            data?"toplevel" := False
+            vars = variables map v ->
+                data?"exportable"?(v.name) := v
+                [.define, v, "#f"]
+            [.begin] + vars + [G[body]]
+        #declaring[variables, body] ->
+            [.let, (variables map v -> [v, "#f"]), G[body]]
+
+        #assign[v, value] ->
+            ["set!", v, G[value]]
+        #begin[*args] ->
+            [.begin, *(args map wrap map G)]
+        #send[#value[d], #seq[#lambda[_, body]]] when (d is delay) ->
+            [.lazy, G[body]]
+        #send[f, #seq[*args]] ->
+            [.ugcall, G[f], *(args map arg -> G[arg])]
+        #send[f, arg] ->
+            [.ugsend, G[f], G[arg]]
+        #seq[*args] ->
+            ["vector-immutable", *(args map wrap map G)]
+        #pair[x, y] ->
+            ["cons", G[x], G[y]]
+        #value[x] ->
+            match x:
+                Char _ -> "#\" + x.ch
+                bool _ -> str[x].lower[]
+                int _ -> x
+                float _ -> x
+                str _ -> """" + x + """"
+                v when (issubclass[v, struct] !! False) ->
+                    ["ugsend", "Struct", ["__symbol", """" + v.__name__ + """"]]
+                v -> ugtranslations ? v
+        #lambda[variables, body] ->
+            ["lambda", variables, G[body]]
+        #if[cond, iftrue, iffalse] ->
+            ["if", G[cond], G[iftrue], G[iffalse]]
+        UniqueVar s ->
+            str[s]
+        str s when (s in repl) ->
+            repl?s
+        str s ->
+            s
+  G
+
+assemble =
+    [list x] ->
+        "(" + " ".join[x map wrap map assemble] + ")"
+    [x] ->
+        str[x]
+
+
+arg = sys.argv?3
+src =
+    if (arg == "S"):
+        Source[sys.argv?4, url = None]
+    else:
+        Source[open[arg].read[], url = None]
+
+
+ptree = ugparse[src]
+
+;; src = .(a = int x -> x, a 13)
+;; src = .(<> (#point{a = 1, "b" => 2, .c => 3}))
+;; src = .([1, 2, 3])
+
+ast = ugcompile[ptree]
+
+;; print! ast
+;; print! ""
+
+;; print["(require ", """" + "lib.scm" + """", ")"]
+
+data = {toplevel = True, exportable = {=}, require = "", provide = ""}
+g = graph[data][ast]
+
+print! "#lang racket"
+print! "(require" + """" + "lib.scm" + """" + ")"
+print! assemble! data?"require"
+print! assemble! g
+print! assemble! data?"provide"
+""
+
+
