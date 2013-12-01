@@ -1,0 +1,337 @@
+
+require:
+    lib
+    common
+
+
+;;;;;;;;;;;;;;;;;
+;; DEFINITIONS ;;
+;;;;;;;;;;;;;;;;;
+
+q = '"
+
+chr = Symbol s -> [
+    digit = "0123456789"
+    id = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_"
+    id_lead = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_"
+    op = ".+-*/~^<>=:%#$@:&|"
+][s]
+
+rx = Symbol s -> [
+    num = .(digit, (digit | '_)*)
+    alphanum = .((alpha | digit | '_)+)
+][s]
+
+Obj =
+    defaults = [spangroup = 0
+                take_ws = [true, true]
+                action = false]
+    Assoc a ->
+        Symbol s -> (a[s] !! defaults[s])
+        x -> a x
+
+standard_matchers = Obj!
+
+    identifier = Obj!
+        leads = chr.id_lead
+        regexp = Rxe.(choice ^=chr.id_lead, (choice ^=chr.id)*)
+        constructor = #id[0]
+
+    numr = Obj!
+        leads = chr.digit
+        regexp = Rxe.({^rx.num}, 'r|'R            ;; radix
+                      maybe {^rx.alphanum}        ;; integer part
+                      maybe ('., {^rx.alphanum})) ;; fractional part
+        constructor = #numr[1, 2, 3]
+
+    num10 = Obj!
+        leads = chr.digit
+        regexp = Rxe.({(^rx.num)*}              ;; integer part
+                      maybe (".", {(^rx.num)+}) ;; fractional part
+                      maybe ('e|'E, maybe {'-|'+}, {(^rx.num)*})) ;; exponent
+        constructor = #num10[1, 2, 3, 4]
+
+    char = Obj!
+        leads = "'"
+        regexp = Rxe.("'", {any})
+        constructor = #char[1]
+
+    string = Obj!
+        leads = String['"]
+        regexp = Rxe.('", {(not ^=(String[q]))*}, '")
+        constructor = #string[1]
+
+    bracket = Vector!
+        Obj!
+            leads = "([{"
+            regexp = Rxe.{choice "([{"}
+            constructor = #operator[.prefix, 1]
+        Obj!
+            leads = ")]}"
+            regexp = Rxe.{choice ")]}"}
+            constructor = #operator[.suffix, 1]
+
+    special_oper = Vector!
+        Obj!
+            leads = ","
+            regexp = Rxe.{","}
+            constructor = #operator[.infix, 1]
+        Obj!
+            leads = ".."
+            regexp = Rxe.{"." * (2..)}
+            constructor = #operator[.unknown, 1]
+        Obj!
+            leads = ":"
+            regexp = Rxe.({":"}, except ^=chr.op)
+            constructor = #operator[.infix, 1]
+            spangroup = 1
+        Obj!
+            leads = "."
+            regexp = Rxe.({"."}, except ^=chr.op)
+            constructor = #operator[.prefix, 1]
+            spangroup = 1
+
+    oper = Obj!
+        leads = chr.op
+        regexp = Rxe.{(choice ^=chr.op)+}
+        constructor = #operator[.unknown, 1]
+
+    rest = Obj!
+        leads = true
+        regexp = Rxe.{any}
+        constructor = #unknown[1]
+
+
+fold_matchers =
+    Promise p ->
+        fold_matchers force[p]
+    Vector v ->
+        chain(v each x -> fold_matchers x)
+    Pair p ->
+        chain(p each x -> fold_matchers x)
+    x ->
+        #rule[x.leads, x.regexp, x.spangroup, x.take_ws, x.constructor, x.action] :: nil
+
+
+rules = V fold_matchers(standard_matchers each Pair[_, x] -> x)
+
+
+SubTokenizer = [rules, ws_re] ->
+
+    rulemap = mut V(0..129 each i -> mut [])
+
+    do rules each #rule[leads, *rest] ->
+        if (leads == true):
+            do 0..129 each i ->
+                rulemap[i].push[rest]
+        else:
+            do leads each c ->
+                i = min[c.numcode, 128]
+                rulemap[i].push[rest]
+
+    ws = [text, pos] ->
+        [Range [start, end]] = ws_re.match_pos[text, pos]
+        end - start
+
+    read = [text, pos] ->
+        if (pos >= text.length):
+            [token = false, skip = 0]
+        else:
+            wsb = ws[text, pos]
+            pos2 = pos + wsb
+            rules = rulemap[min[text[pos2].numcode, 128]]
+            do rules each
+                [rxp, spangroup, [take_wsb, take_wsa],
+                 Struct [builder, *indices], action] ->
+                    groups = rxp.match_pos[text, if[take_wsb, pos2, pos]]
+                    if groups:
+                        Range [start, end] = groups[spangroup]
+                        whitespace = [wsb, if[take_wsa, ws[text, end], 0]]
+                        location = #location[start, end, whitespace]
+                        args = V indices each
+                                   Number i ->
+                                       match groups[i]:
+                                           Range r -> text[r]
+                                           _ -> false
+                                   other -> other
+                        break [
+                            token = builder[location, *args]
+                            skip = end - pos
+                            action = action
+                        ]
+
+    read
+
+
+GentokensMaker = [read] ->
+    gentokens = [text, pos = 0] ->
+        match read[text, pos]:
+            [=> token, => skip, => action] ->
+                token :: gentokens[text, pos + skip]
+            _ -> nil
+    gentokens
+
+
+FixityDisambiguator = [inherent_fixity] ->
+
+    buffer = mut []
+    pfx = true
+
+    process_buffer = [buffer, pfx, sfx, start] ->
+        if (buffer == nil):
+            nil
+        elif (pfx and sfx):
+            buffer each #operator[loc, .unknown, op] ->
+                #nullary[loc, op]
+        elif pfx:
+            buffer each #operator[loc, .unknown, op] ->
+                #operator[loc, .prefix, op]
+        elif sfx:
+            buffer each #operator[loc, .unknown, op] ->
+                #operator[loc, .suffix, op]
+        else:
+            Pair [#operator[loc, .unknown, op], rest] = buffer
+            fixity = inherent_fixity[loc, op]
+            #operator[loc, fixity, op] :: (
+                process_buffer[rest, fixity == .infix or fixity == .prefix, sfx, rest]
+            )
+
+    compute =
+
+        x when (x == nil) ->
+            process_buffer[iter[buffer], pfx, true, 0]
+
+        Pair [token, rest] ->
+
+            fixity = match token:
+                         #operator[_, fixity, _] -> fixity
+                         _ -> .id
+
+            if (fixity == .unknown):
+                buffer.push[token]
+                compute rest
+            else:
+                [sfx, newpfx] =
+                    match fixity:
+                        .id -> [false, false]
+                        .infix -> [true, true]
+                        .prefix -> [false, true]
+                        .suffix -> [true, false]
+
+                results = process_buffer[iter[buffer], pfx, sfx, 0]
+                buffer := mut []
+                pfx := newpfx
+                chain[results, token :: (compute rest)]
+
+    compute
+
+
+inherent_fixity = [#location[start, end, [wsb, wsa]], op] ->
+    if (wsb >= 1 and wsa >= 1):
+        .infix
+    elif (wsb >= 1):
+        .prefix
+    elif (wsa >= 1):
+        .suffix
+    else:
+        .infix
+
+
+Alternator = [loc0, void, ws] ->
+
+    last = loc0
+    lastfix = .infix
+
+    compute =
+
+        x when (x == nil) ->
+            match last:
+                #operator _ ->
+                    (void[last, false] :: nil)
+                _ -> nil
+
+        Pair [token, rest] ->
+
+            fix = match token:
+                      #operator[_, fixity, _] -> fixity
+                      _ -> .id
+            t = (++)[String[lastfix], "/", String[fix]]
+
+            fns =
+                if (t == "id/id"):
+                    [ws]
+                elif (t in {"prefix/infix"
+                            "infix/infix"
+                            "infix/suffix"
+                            "infix/prefix"
+                            "suffix/infix"
+                            "prefix/prefix"
+                            "prefix/suffix"
+                            "suffix/suffix"}):
+                    [void]
+                elif (t == "id/prefix"):
+                    [ws, void]
+                elif (t == "suffix/id"):
+                    [void, ws]
+                elif (t == "suffix/prefix"):
+                    [void, ws, void]
+                else:
+                    []
+
+            thisloc = token[0]
+            extra = all fns each fn ->
+                new = fn[last, thisloc]
+                last := new[0]
+                new
+
+            last := thisloc
+            lastfix := fix
+
+            chain[extra, token :: (compute rest)]
+
+    compute
+
+sandwich = [ctor, args] -> [left, right] ->
+
+    results = match [left, right]:
+                  [#location[_, start, [_, wsb]]
+                   #location[end, _, [wsa, _]]] ->
+                      [start, end, [wsb, wsa]]
+                  [#location[_, start, [_, wsb]], false _] ->
+                      [start, start, [wsb, 0]]
+                  [false _, #location[end, _, [wsa, _]]] ->
+                      [end, end, [0, wsa]]
+
+    ctor[#location results, *args]
+
+
+
+subt = SubTokenizer[rules, Rx" *"]
+
+gentokens = GentokensMaker[subt]
+
+
+tokenize = [txt] ->
+
+    disambiguate = FixityDisambiguator[inherent_fixity]
+
+    alternator = Alternator!
+        #location[0, 0, [0, 0]]
+        sandwich[#void, []]
+        sandwich[#operator, [.infix, ""]]
+
+    tokens = all gentokens[txt]
+    tokens := all (disambiguate tokens)
+    tokens := all (alternator tokens)
+    tokens
+
+striploc = seq ->
+    all seq each
+        Struct [ctor, _, *args] ->
+            ctor args
+
+provide:
+    tokenize
+    striploc
+
+
