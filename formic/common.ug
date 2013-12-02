@@ -12,6 +12,9 @@ require:
     pr! (++)[pre, div.ug[htmlpr toprint], post]
 
 
+Repr = [x] -> z when (z == repr) -> x
+
+
 join = [j] -> xs ->
     items =
         V enumerate[xs] each
@@ -141,8 +144,18 @@ htmlpr =
     #prop [x, *props] ->
         htmlpr x
 
-    #attr [attributes, *children] ->
-        span(Set attributes)[*children]
+    #attr [#set[*attributes], *children] ->
+        span(Set attributes)[*(V children each htmlpr)]
+
+    #text [s] -> s.replace[
+        "&" => "&amp;"
+        ">" => "&gt;"
+        "<" => "&lt;"
+        q => "&quot;"
+    ]
+    #raw [s] -> s
+
+    #cat [*things] -> (++) things each htmlpr
 
 
 ;; SECTION
@@ -212,6 +225,6 @@ Rxe = x -> Rx(_Rxe x)
 
 provide:
     join
-    (<>), textpr, htmlpr
+    (<>), Repr, textpr, htmlpr
     Rxe
 

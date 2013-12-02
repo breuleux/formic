@@ -505,6 +505,7 @@
               #f)
             (error "Nope"))))))
 
+(define __plain_variable (lambda (x) (list x)))
 
 (define spec->deconstructor
 
@@ -523,7 +524,7 @@
         (dec (fn x)))))
 
    ((? symbol? s)
-    (lambda (x) (list x)))
+    __plain_variable)
 
    (#f
     (lambda (x) '()))
@@ -585,7 +586,29 @@
     (error "Cannot match in spec->deconstructor" x))))
 
 (define (__make_object . components)
-  (clause-map (list->vector (map vector->list components))))
+  (let ((clauses (map vector->list components)))
+    (define (all-vars? vs)
+      (let loop ((vs vs))
+        (if (null? vs)
+            #t
+            (if (eq? (car vs) __plain_variable)
+                (loop (cdr vs))
+                #f))))
+    (match clauses
+      ((list (list (s-stddec (? all-vars? vs) '() #f '() '() #f) #f fn))
+       ;; This is a plain function, like
+       ;; [x] -> ... or [x, y] -> ...
+       ;; No keyword or rest arguments and no checking of arguments
+       ;; In this case we can just return fn directly.
+       fn)
+      (x
+       (clause-map (list->vector clauses))))))
+
+    ;; ;; (if (and (not (null? clauses))
+    ;; ;;          (null? (cdr clauses))
+    ;; ;;          )
+    ;; (pretty-print clauses)
+    ;; (clause-map (list->vector clauses))))
 
 
 
@@ -1056,6 +1079,8 @@
      (ugsend Vector (force p)))
     ((? vector? v)
      v)
+    ((? set? s)
+     (list->vector (set->list s)))
     ((? pair? p)
      (list->vector (force-list p)))
     ((? null? p)
@@ -1090,6 +1115,10 @@
     `#s(vector ,@(map repr (vector->list v))))
    ('length
     (vector-length v))
+   ('first
+    (vector-ref v 0))
+   ('last
+    (vector-ref v (- (vector-length v) 1)))
    ('find
     (lambda (value)
       (let loop ((i 0))
@@ -1098,6 +1127,12 @@
             (if (equal? (vector-ref v i) value)
                 i
                 (loop (+ i 1)))))))
+
+   ((m-dispatch 0 (== __plusplus eq?))
+    (match-lambda
+     ((== __hole eq?) (error "no suffix ++"))
+     (v2 (vector-append v v2))))
+
    ((== iter eq?)
     (lambda ()
       (vector->list v)))
@@ -1280,6 +1315,8 @@
      (__set v))
     ((? pair? p)
      (list->set (force-list p)))
+    ((? null? p)
+     (set))
 
     ((== projector eq?)
      (lambda (value)
@@ -1540,27 +1577,35 @@
 ;; . (#) deconstructor [value]  ==> deconstruct into [tag, elements...]
 
 (define (__struct-type tag)
-  (proxy
-   (match-lambda
-    ((vector elems ...)
-     (apply make-prefab-struct tag elems))
-    ('name
-     tag)
-    ((== repr eq?)
-     `#s(struct_type ,tag))
-    ((== projector eq?)
-     (lambda (value)
-       (let ((k (prefab-struct-key value)))
-         (if (eq? k tag)
-             value
-             (error "Not struct" tag)))))
-    ((== deconstructor eq?)
-     (lambda (value)
-       (let ((k (prefab-struct-key value)))
-         (if (eq? k tag)
-             (let ((v (struct->vector value)))
-               (vector-copy v 1 (vector-length v)))
-             (error "Not struct" tag))))))))
+  (define me
+    (proxy
+     (match-lambda
+      ((? promise? p)
+       (ugsend me (force p)))
+      ((vector elems ...)
+       (apply make-prefab-struct tag elems))
+      ((? pair? p)
+       (apply make-prefab-struct tag (force-list p)))
+      ((? null? p)
+       (make-prefab-struct tag))
+      ('name
+       tag)
+      ((== repr eq?)
+       `#s(struct_type ,tag))
+      ((== projector eq?)
+       (lambda (value)
+         (let ((k (prefab-struct-key value)))
+           (if (eq? k tag)
+               value
+               (error "Not struct" tag)))))
+      ((== deconstructor eq?)
+       (lambda (value)
+         (let ((k (prefab-struct-key value)))
+           (if (eq? k tag)
+               (let ((v (struct->vector value)))
+                 (vector-copy v 1 (vector-length v)))
+               (error "Not struct" tag))))))))
+  me)
 
 (define Struct
   (proxy
