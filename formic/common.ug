@@ -70,12 +70,18 @@ textpr =
 q = String['"]
 
 maketag = [tag, classes = {}] ->
+    Promise p ->
+        maketag[tag, classes](force[p])
     Symbol cls ->
         maketag[tag, classes | {String[cls]}]
     String cls ->
         maketag[tag, classes | {cls}]
     Set more_classes ->
         maketag[tag, classes | (S more_classes each c -> String[c])]
+    x when (x == nil) ->
+        maketag[tag, classes][]
+    Pair p ->
+        maketag[tag, classes](V p)
     Vector children ->
         (++)["<", tag, " class=", q
              join[" "] classes
@@ -156,6 +162,11 @@ htmlpr =
     #raw [s] -> s
 
     #cat [*things] -> (++) things each htmlpr
+
+    #matrix [*rows] ->
+        html.table rows each #row[*elems] ->
+            html.tr elems each elem ->
+                html.td[htmlpr elem]
 
 
 ;; SECTION

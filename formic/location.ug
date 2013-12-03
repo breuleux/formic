@@ -103,22 +103,3 @@ highlight_locations = [=> context = 0, **locations] ->
         locations each Pair [loc, cls] -> [loc.range, [cls]]
     ]
 
-
-s = Source["one\ntwo\nthree\nfour\nfive\nsix"]
-
-<> s
-<> s.text
-<> s.highlight_lines[3..6]
-
-
-
-loc1 = Location[s, 1..3]
-loc2 = Location[s, 8..17]
-
-
-<> loc1.ref
-<> loc2.ref
-<> (loc1 + loc2).ref
-
-<> highlight_locations[loc2 => "hl2", context = 1]
-<> loc1.highlight["hl3"]

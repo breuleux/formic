@@ -1,0 +1,373 @@
+
+require:
+    common
+    tokenizer
+    location
+
+
+iterator = [x] ->
+    current = x
+    [] ->
+        if (current is nil):
+            raise #eos[]
+        else:
+            rval = current.head
+            current := current.tail
+            rval
+
+
+operator_parse = [tokenizer, order, finalize] ->
+
+    it = iterator[tokenizer]
+    between = it[]
+
+    escape return:
+        right_op = (it[] !! #eos [] -> return finalize[between])
+        left_op = false
+        stack = mut []
+        current = false
+
+        while true:
+            ord =
+                if (not left_op):
+                    if (not right_op):
+                        return between
+                    else:
+                        .right
+                elif (not right_op):
+                    .left
+                else:
+                    order[left_op, right_op]
+
+            match ord:
+                .left ->
+                    current.push[between]
+                    between := finalize[current]
+                    [left_op, current] := stack.pop[]
+                .right ->
+                    stack.push[[left_op, current]]
+                    left_op := right_op
+                    current := mut [mut [right_op], between]
+                    between := it[]
+                    right_op := (it[] !! #eos [] -> false)
+                .aggr ->
+                    current[0].push[right_op]
+                    current.push[between]
+                    left_op := right_op
+                    between := it[]
+                    right_op := (it[] !! #eos [] -> false)
+                _ ->
+                    raise #UnknownOrder[ord, left_op, right_op]
+
+
+OperatorMatrix =
+  #square[*groups] ->
+    OperatorMatrix groups
+  Vector _groups ->
+    groups = _groups
+    ng = groups.length
+    matrix = V 0..ng each _ -> MVector 0..ng each _ -> 0
+    to_index = Table enumerate[groups] each [i, g] -> (g :: i)
+
+    order = [_groups, left, right] ->
+        groups = match _groups:
+                     Vector g -> g
+                     #square[*g] -> g
+        gids = groups each g -> to_index[g]
+        if left:
+            do neighbours[gids] each [a, b] ->
+                matrix[a][b] := -1
+        if right:
+            do neighbours[gids] each [a, b] ->
+                matrix[b][a] := 1
+
+    fill_intersection = [l, r] ->
+        do 0..ng each i ->
+            match [self[l, i], self[i, r]]:
+                [-1, -1] ->
+                    matrix[l][r] := -1
+                    break true
+                [1, 1] ->
+                    matrix[l][r] := 1
+                    break true
+                _ -> false
+
+
+    replace = [gname, om] ->
+        gid = to_index[gname]
+        ng2 = om.groups.length
+        newmatrix = chain enumerate[matrix] each
+            [i, row] when (i == gid) ->
+                0..ng2 each j ->
+                    MVector chain[matrix[i][0..gid]
+                                  om.matrix[j]
+                                  matrix[i][(gid + 1)..ng]]
+            [i, row] ->
+                [MVector chain[matrix[i][0..gid]
+                               0..ng2 each _ -> matrix[i][gid]
+                               matrix[i][(gid + 1)..ng]]]
+        matrix := V newmatrix
+        groups := V chain[groups[0..gid]
+                          om.groups
+                          groups[(gid + 1)..ng]]
+        ng := ng + ng2 - 1
+        to_index := Table enumerate[groups] each [i, g] -> (g :: i)
+
+    self =
+        .matrix -> matrix
+        .groups -> groups
+
+        [i, j] -> matrix[i][j]
+
+        .order ->
+            .left -> g -> order[g, true, false]
+            .right -> g -> order[g, false, true]
+            g -> order[g, true, true]
+
+        .replace -> Assoc repl ->
+            do repl each Pair [a, b] -> replace[a, b]
+
+        .assoc ->
+            Symbol direction ->
+                num = match direction:
+                          .left -> -1
+                          .right -> 1
+                this =
+                    #square [*g] -> this g
+                    Vector groups ->
+                        do groups each g ->
+                            i = to_index[g]
+                            matrix[i][i] := num
+                this
+
+        .infer -> [] ->
+            changed = true
+            while changed:
+                changed := false
+                do 0..ng each i ->
+                    do 0..ng each j ->
+                        if (matrix[i][j] == 0):
+                            changes = fill_intersection[i, j]
+                            changed := changed or changes
+                ;;if not(changed):
+                ;;    (false, break)
+
+        .set_relation -> [left, right, value] ->
+            matrix[to_index[left], to_index[right]] := value
+
+        x when (x == repr) ->
+            #matrix matrix each row ->
+                #row row each
+                         0 -> #attr[#set["red"], #raw["&sdot;"]]
+                         1 -> #attr[#set["cyan"], #raw["&uarr;"]]
+                         -1 -> #attr[#set["green"], #raw["&larr;"]]
+                         x -> #text["?"]
+
+    self
+
+
+formic_op_matrix = [] ->
+
+    unfold = #square[*xs] -> xs
+
+
+    major = OperatorMatrix.[
+       head, arithmetic, collection, other, logic, tail
+    ]
+    major.order.[head, arithmetic, logic, tail]
+    major.order.[head, collection, logic]
+    major.order.[head, other, logic]
+    major.infer[]
+
+
+    head = OperatorMatrix.[
+        pfx, sjuxt, unq
+    ]
+    head.assoc.left.[sjuxt]
+    head.order.[pfx, sjuxt, unq]
+
+
+    arith = OperatorMatrix.[
+        power, mul, add, cmp
+    ]
+
+    arith.assoc.left.[mul, add, cmp]
+    arith.assoc.right.[power]
+    arith.order.[power, mul, add, cmp]
+    arith.infer[]
+
+
+    coll = OperatorMatrix.[
+        cat, pair, inter, union, diff, range, in
+    ]
+    coll.assoc.left.[cat, inter, union, diff]
+    coll.assoc.right.[pair]
+    do unfold.[cat, pair, inter, union, diff, range] each
+        g -> coll.order[g, .(in)]
+    coll.infer[]
+
+
+    logic = OperatorMatrix.[
+        and, or
+    ]
+    logic.assoc.left.[and, or]
+    logic.infer[]
+
+
+    other = OperatorMatrix.[
+        wjuxt, custom
+    ]
+    other.assoc.left.[wjuxt]
+    other.infer[]
+
+
+    tail = OperatorMatrix.[
+        when, decl, assoc, stmt, open, close
+    ]
+    tail.assoc.left.[stmt]
+    tail.assoc.right.[decl]
+    tail.order.[when, decl, assoc, stmt, open]
+    tail.infer[]
+
+    major.replace[
+        head = head
+        arithmetic = arith
+        collection = coll
+        logic = logic
+        other = other
+        tail = tail
+    ]
+
+    major
+
+
+om = formic_op_matrix[]
+<> om.groups
+<> om
+
+
+
+
+
+
+;; stuff =
+;;   om1 = OperatorMatrix.[x, y, z]
+;;   om1.order[.x, .y]
+
+;;   om2 = OperatorMatrix.[a, b, c, d]
+;;   om2.order[.a, .b]
+;;   om2.order.[b, c]
+;;   ;;om.order[.c, .d]
+;;   om2.infer[]
+
+;;   <> om1
+;;   <> om2
+
+;;   om1.replace[.x, om2]
+;;   <> om1
+
+
+;; plus = "+"
+;; times = "*"
+;; text = "a + b + c"
+;; tokens = tokenize[text]
+
+;; <> text
+;; <> tokens
+
+;; order =
+;;   ["+", "+"] -> .aggr
+;;   ["*", "*"] -> .left
+;;   ["+", "*"] -> .right
+;;   ["*", "+"] -> .left
+
+;; finalize = [x] -> x
+
+;; <> operator_parse[iter[tokens], order, finalize]
+
+
+
+
+
+
+
+
+
+
+;; ug_op_matrix = [] ->
+
+;;     om = OperatorMatrix.[
+;;         sjuxt, wjuxt, pfx, pfx2, add, mul, unary, pow, range
+;;         in, by, deco, binor, binxor, binand, cmp, and, or
+;;         pr, cond, assoc, lbda, colon, pair, bang, custom
+;;         decl, seq, nl, map, open, close
+;;     ]
+
+;;     assoc = om.assoc
+;;     order = om.order
+;;     infer = om.infer
+
+;;     ;; associativity
+;;     assoc.left.[sjuxt, wjuxt, add, mul, binor, binxor, binand, cmp
+;;                 and, or, seq, nl, map]
+;;     assoc.right.[pow, lbda, decl, colon, pair]
+
+;;     ;; major
+;;     order.[pfx, sjuxt, wjuxt, assoc, decl, cond, bang, nl, seq]
+;;     order.[sjuxt, pair, assoc]
+;;     order.[sjuxt, custom, assoc]
+;;     order.[seq, open]
+;;     order.[seq, close]
+;;     order.[sjuxt, pfx2, pow, unary, mul, add
+;;            range, in
+;;            binand, binxor, binor, cmp
+;;            assoc]
+;;     order.[range, by, in]
+;;     order.[in, wjuxt]
+;;     order.[by, map, assoc]
+;;     order.[sjuxt, deco, wjuxt]
+
+;;     ;; logical connectives
+;;     order.[cmp, and, assoc]
+;;     order.[cmp, or, assoc]
+
+;;     ;; lambda and colon
+;;     order.[wjuxt, lbda, decl]
+;;     order.[wjuxt, colon, decl]
+
+;;     infer[]
+
+;;     order.left.[cond, assoc]
+;;     order.left.[assoc, cond]
+
+;;     order.right.[map, wjuxt]
+;;     order.right.[wjuxt, map]
+
+;;     order.left.[lbda, assoc]
+;;     order.right.[lbda, assoc]
+;;     order.left.[lbda, decl]
+;;     order.right.[lbda, decl]
+;;     order.left.[cond, lbda]
+;;     order.right.[cond, lbda]
+
+;;     unfold = #square[*xs] -> xs
+;;     unfold.[sjuxt, wjuxt, pfx, add, mul, unary, pow, range
+;;             binor, binxor, binand, cmp, and, or
+;;             pr, cond, assoc, lbda, colon, custom] each g ->
+;;         order.right[g, .colon]
+;;         order.right[g, .lbda]
+
+;;     order.right.[lbda, map]
+;;     order.right.[map, lbda]
+
+;;     ;; om.set_relation[.open, .close, #merge[[
+;;     ;;     "()" => .round
+;;     ;;     "[]" => .square
+;;     ;;     "{}" => .curly
+;;     ;; ]]]
+
+;;     om
+
+;; om = formic_op_matrix[]
+
+;; <> om

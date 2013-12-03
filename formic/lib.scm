@@ -1212,6 +1212,8 @@
             (if (equal? (gvector-ref v i) value)
                 i
                 (loop (+ i 1)))))))
+   ((m-assign (vector item) value)
+    (gvector-set! v item value))
    ('push
     (lambda (value)
       (gvector-add! v value)))
@@ -1376,6 +1378,12 @@
 (define Table
   (proxy
    (match-lambda
+    ((? promise? p)
+     (ugsend Table (force p)))
+    ((? pair? p)
+     (make-immutable-hash (force-list p)))
+    ((? null? p)
+     #hash())
     ((? vector? v)
      (__table v))
     ((== projector eq?)
