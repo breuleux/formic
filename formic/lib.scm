@@ -37,6 +37,30 @@
       (lambda ()
         (s-ok stmt))))))
 
+
+;; (define (ann1 obj k v)
+;;   (let* ((obj (if (s-ann? obj) obj (s-ann obj (make-immutable-hash))))
+;;          (h (s-ann-annotations obj)))
+;;     (s-ann obj (hash-set h k v))))
+
+(define (ann1 obj k v)
+  (let* ((x (if (s-ann? obj) (s-ann-object obj) obj))
+         (h (if (s-ann? obj) (s-ann-annotations obj) (make-immutable-hash))))
+    (s-ann x (hash-set h k v))))
+
+(define (%<< a b)
+  (if (s-ann? b)
+      (begin
+        (for-each
+         (lambda (x)
+           (set! a (ann1 a (car x) (cdr x))))
+         (hash->list (s-ann-annotations b)))
+        a)
+      a))
+
+(define (inexact n)
+  (exact->inexact n))
+
 (define (pr x)
   (display x)
   (newline))
@@ -107,6 +131,8 @@
   (cond
    ((promise? object)
     (ugsend (force object) message))
+   ((s-ann? object)
+    (ugsend (s-ann-object object) message))
    ((procedure? object)
     (let ((message (if (promise? message) (force message) message)))
       (cond
@@ -270,6 +296,9 @@
 (struct s-range (start end)
  #:transparent
  #:reflection-name 'range)
+(struct s-ann (object annotations)
+ #:transparent
+ #:reflection-name 'ann)
 
 ;; Raised structures
 ;; Control flow
@@ -358,26 +387,39 @@
                    (loop tail)))))))))
 
 
-;; For extraction
-(struct s-extracted (object)
- #:transparent
- #:reflection-name 'extracted)
+;; ;; For extraction
+;; (struct s-extracted (object)
+;;  #:transparent
+;;  #:reflection-name 'extracted)
 
 (define (extract-vector object)
   (cond
-   ((s-extracted? object) (s-extracted-object object))
+   ;; ((s-extracted? object) (s-extracted-object object))
    ((vector? object) object)
    ((s-hybrid? object) (s-hybrid-vector object))
+   ((hash? object) '#())
    ((s-assoc? object) '#())
-   (#t (error "Not deconstructible"))))
+   (#t (error "Not deconstructible 1"))))
 
-(define (extract-assoc object)
+;; (define (extract-assoc object)
+;;   (cond
+;;    ;; ((s-extracted? object) (s-extracted-object object))
+;;    ((vector? object) '#())
+;;    ((s-hybrid? object) (s-assoc-vector (s-hybrid-assoc object)))
+;;    ((s-assoc? object) (s-assoc-vector object))
+;;    (#t (error "Not deconstructible"))))
+
+(define (extract-assoc-and-hash object)
   (cond
-   ((s-extracted? object) (s-extracted-object object))
-   ((vector? object) '#())
-   ((s-hybrid? object) (s-assoc-vector (s-hybrid-assoc object)))
-   ((s-assoc? object) (s-assoc-vector object))
-   (#t (error "Not deconstructible"))))
+   ;; ((s-extracted? object) (s-extracted-object object))
+   ((vector? object) (cons #f (make-hash)))
+   ((hash? object) (cons #f (hash-copy object)))
+   ((s-hybrid? object) (extract-assoc-and-hash (s-hybrid-assoc object)))
+   ((s-assoc? object)
+    (let* ((v (s-assoc-vector object))
+           (a (vector->list v)))
+      (cons a (make-hash a))))
+   (#t (error "Not deconstructible 2"))))
 
 
 (struct s-stddec (leadpos defpos star trailpos keys dstar)
@@ -387,8 +429,8 @@
  (lambda (self object)
    (let* ((v (extract-vector object))
           (vl (vector-length v))
-          (a (extract-assoc object))
-          (al (vector-length a))
+          ;; (a (extract-assoc object))
+          (apart (extract-assoc-and-hash object))
           (i 0)
           (results '()))
 
@@ -432,8 +474,10 @@
                #f)))
 
      ;; keys part
-     (let* ((a (vector->list a))
-            (h (make-hash a))
+     (let* (;; (a (vector->list a))
+            ;; (h (make-hash a))
+            (a (car apart))
+            (h (cdr apart))
             (keys (s-stddec-keys self)))
        (for-each
         (lambda (kdd)
@@ -455,16 +499,18 @@
          (if dstardec
              (push-back!
               (dstardec
-               (s-assoc
-                (list->vector
-                 (let loop ((remainder a))
-                   (if (null? remainder)
-                       '()
-                       (let ((key (car (car remainder))))
-                         (if (hash-has-key? h key)
-                             (cons (cons key (hash-ref h key))
-                                   (loop (cdr remainder)))
-                             (loop (cdr remainder)))))))))
+               (if a
+                   (s-assoc
+                    (list->vector
+                     (let loop ((remainder a))
+                       (if (null? remainder)
+                           '()
+                           (let ((key (car (car remainder))))
+                             (if (hash-has-key? h key)
+                                 (cons (cons key (hash-ref h key))
+                                       (loop (cdr remainder)))
+                                 (loop (cdr remainder))))))))
+                   (s-assoc (list->vector (hash->list h)))))
               results)
              (if (= (hash-count h) 0)
                  #f
@@ -698,10 +744,18 @@
 
 
 
+(define-syntax-rule (extract x)
+  (let ((realx (force x)))
+    (if (s-ann? realx)
+        (s-ann-object realx)
+        realx)))
+
+
 (define-syntax-rule (check x predicate message)
-  (if (predicate x)
-      x
-      (error message x)))
+  (let ((realx (extract x)))
+    (if (predicate realx)
+        realx
+        (error message realx))))
 
 
 ;; Data primitives
@@ -733,9 +787,10 @@
      #s(special hole))
     ((== projector eq?)
      (lambda (value)
-       (if (eq? value __hole)
-           value
-           (error "not a hole"))))
+       (let ((value (extract value)))
+         (if (eq? value __hole)
+             value
+             (error "not a hole")))))
     ((== deconstructor eq?)
      (error "hole is not deconstructible"))
     (x
@@ -750,9 +805,10 @@
     #s(special true))
    ((== projector eq?)
     (lambda (value)
-      (if value
-          value
-          (error "not true"))))
+      (let ((value (extract value)))
+        (if value
+            value
+            (error "not true")))))
    ((== deconstructor eq?)
     (error "truth is not deconstructible"))
    (x
@@ -765,9 +821,10 @@
     #s(special false))
    ((== projector eq?)
     (lambda (value)
-      (if value
-          (error "not false")
-          value)))
+      (let ((value (extract value)))
+        (if value
+            (error "not false")
+            value))))
    ((== deconstructor eq?)
     (error "falsehood is not deconstructible"))
    (x
@@ -782,9 +839,10 @@
     (lambda () '()))
    ((== projector eq?)
     (lambda (value)
-      (if (not (null? value))
-          (error "not nil")
-          value)))
+      (let ((value (extract value)))
+        (if (not (null? value))
+            (error "not nil")
+            value))))
    ((== deconstructor eq?)
     (error "emptiness is not deconstructible"))
    (x
@@ -800,6 +858,8 @@
 (define Number
   (proxy
    (match-lambda
+    ((vector (? string? s))
+     (string->number s))
     ((== repr eq?)
      #s(type Number))
     ((== projector eq?)
@@ -953,6 +1013,10 @@
       (string-split s sep)))
    ('sym
     (string->symbol s))
+   ('empty
+    (= (string-length s) 0))
+   ('codepoints
+    (string->list s))
 
    ((== repr eq?)
     s)
@@ -1179,7 +1243,10 @@
        (check value gvector? "Not a mvector!")))
     ((== deconstructor eq?)
      (lambda (value)
-       (check value gvector? "Not a mvector!"))))))
+       (let ((value (extract value)))
+         (if (gvector? value)
+             (gvector->vector value)
+             (error "Not a mvector!"))))))))
 
 ;; MVector instance
 ;; x mv[index]                     ==> get value at index
@@ -1412,10 +1479,10 @@
 
       (match-lambda
        ((vector key)
-        (hash-ref t key))
+        (hash-ref t (extract key)))
        ('get
         (lambda (key default)
-          (hash-ref t key default)))
+          (hash-ref t (extract key) default)))
        ('length
         (hash-count t))
        ((== repr eq?)
@@ -1429,10 +1496,10 @@
 
       (match-lambda
        ((vector key)
-        (hash-ref t key))
+        (hash-ref t (extract key)))
        ('get
         (lambda (key default)
-          (hash-ref t key default)))
+          (hash-ref t (extract key) default)))
        ('length
         (hash-count t))
        ((m-assign (vector item) value)
@@ -1602,17 +1669,19 @@
        `#s(struct_type ,tag))
       ((== projector eq?)
        (lambda (value)
-         (let ((k (prefab-struct-key value)))
-           (if (eq? k tag)
-               value
-               (error "Not struct" tag)))))
+         (let ((value (extract value)))
+           (let ((k (prefab-struct-key value)))
+             (if (eq? k tag)
+                 value
+                 (error "Not struct" tag))))))
       ((== deconstructor eq?)
        (lambda (value)
-         (let ((k (prefab-struct-key value)))
-           (if (eq? k tag)
-               (let ((v (struct->vector value)))
-                 (vector-copy v 1 (vector-length v)))
-               (error "Not struct" tag))))))))
+         (let ((value (extract value)))
+           (let ((k (prefab-struct-key value)))
+             (if (eq? k tag)
+                 (let ((v (struct->vector value)))
+                   (vector-copy v 1 (vector-length v)))
+                 (error "Not struct" tag)))))))))
   me)
 
 (define Struct
@@ -1799,8 +1868,8 @@
 (define Promise
   (proxy
    (match-lambda
-    ((vector start end)
-     (s-range start end))
+    ((vector x)
+     (lazy x))
     ((== projector eq?)
      (lambda (value)
        (check value promise? "Not a promise!")))
@@ -1809,16 +1878,42 @@
        (error "promises are not deconstructible"))))))
 
 
+;; ANN
 
+;; Ann class (annotations)
+;; x Ann projector [value]     ==> match value
+;; x Ann deconstructor [value] ==> match value
 
-(define (__check_equal value)
+(define Ann
   (proxy
    (match-lambda
     ((== projector eq?)
-     (lambda (other-value)
-       (if (equal? value other-value)
-           value
-           (error "Not equal to" value other-value)))))))
+     (lambda (value)
+       (let ((value (force value)))
+         (if (s-ann? value)
+             (vector (s-ann-object value)
+                     (s-ann-annotations value))
+             (vector value (make-hash))))))
+    ((== deconstructor eq?)
+     (lambda (value)
+       (let ((value (force value)))
+         (if (s-ann? value)
+             (vector (s-ann-object value)
+                     (s-ann-annotations value))
+             (vector value (make-hash)))))))))
+
+
+
+(define (__check_equal value)
+  (let ((value (extract value)))
+   (proxy
+    (match-lambda
+     ((== projector eq?)
+      (lambda (other-value)
+        (let ((other-value (extract other-value)))
+          (if (equal? value other-value)
+              value
+              (error "Not equal to" value other-value)))))))))
 
 (define (__while cond body)
   (define last #f)
@@ -1835,6 +1930,7 @@
 (hash-set! proxies 'struct:fixnum-integer __number_proxy)
 (hash-set! proxies 'struct:bignum-integer __number_proxy)
 (hash-set! proxies 'struct:inexact-number __number_proxy)
+(hash-set! proxies 'struct:fractional-number __number_proxy)
 (hash-set! proxies 'struct:string __string_proxy)
 (hash-set! proxies 'struct:symbol __symbol_proxy)
 (hash-set! proxies 'struct:char __char_proxy)
@@ -1912,6 +2008,7 @@
 
 
 
+
 ;; @library_function("gen")
 ;; def uggen(seq, obj):
 ;;     _SHOW_FRAME = SHF
@@ -1971,6 +2068,9 @@
  ugsend
  ugcall
 
+ ann1
+ %<<
+ inexact
  all
  pr
  empty
@@ -2008,9 +2108,11 @@
  V A S T
 
  MVector
+ MTable
 
  Rx
  Promise
+ Ann
  Hole
 
  __symbol

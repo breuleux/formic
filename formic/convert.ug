@@ -9,6 +9,7 @@ repl = {
   (/) = "__div"
   (|) = "__union"
   (&) = "__inter"
+  (**) = "__pow"
   (::) = "cons"
   (..) = "__range"
   (++) = "__plusplus"

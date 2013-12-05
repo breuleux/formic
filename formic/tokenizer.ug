@@ -1,6 +1,7 @@
 
 require:
     common
+    location
 
 
 ;;;;;;;;;;;;;;;;;
@@ -244,10 +245,9 @@ Alternator = [loc0, void, ws] ->
     compute =
 
         x when (x == nil) ->
-            match last:
-                #operator _ ->
-                    (void[last, false] :: nil)
-                _ -> nil
+            match lastfix:
+                .id -> nil
+                _ -> (void[last, false] :: nil)
 
         Pair [token, rest] ->
 
@@ -310,7 +310,7 @@ subt = SubTokenizer[rules, Rx" *"]
 gentokens = GentokensMaker[subt]
 
 
-tokenize = [txt] ->
+raw_tokenize = [txt] ->
 
     disambiguate = FixityDisambiguator[inherent_fixity]
 
@@ -324,13 +324,81 @@ tokenize = [txt] ->
     tokens := all (alternator tokens)
     tokens
 
+
 striploc = seq ->
     all seq each
         Struct [ctor, _, *args] ->
             ctor args
 
+
+calc_width = [fixity, b, a] ->
+    match fixity:
+        .infix -> if[a >= 1 or b >= 1, .wide, .short]
+        .prefix -> if[a >= 1, .wide, .short]
+        .suffix -> if[b >= 1, .wide, .short]
+
+
+tokenize = [src] ->
+
+    txt = src.text
+
+    raw_tokenize[txt] each
+
+        #operator [#location[start, end, [wsb, wsa]], fixity, op] ->
+            width = calc_width[fixity, wsb, wsa]
+            #operator[fixity, width, op] % [location = Location[src, start..end]]
+
+        Struct [ctor, #location[start, end, [wsb, wsa]], *rest] ->
+            rval = match ctor(rest):
+    
+                       #id [id] ->
+                           id.sym
+    
+                       #nullary [op] ->
+                           op.sym
+    
+                       #char [c] ->
+                           #value[c[0]]
+    
+                       #string [s] ->
+                           #value[s]
+    
+                       #num10 [int, false _, false _, false _] ->
+                           #value[Number[int]]
+    
+                       #num10 [int, frac, expsign, exp] ->
+                           #value[Number[(++)[int or "0", ".", frac or "0"
+                                              "e", expsign or "+", exp or "0"]]]
+    
+                       #numr [radix, int, frac] ->
+                           radix := Number[radix]
+                           codepoints = chain[(int or "").codepoints
+                                              (frac or "").codepoints]
+                           value = 0
+    
+                           do codepoints each c ->
+                               co = c.numcode
+                               i = if[co < 58, co - 48
+                                      if[co < 91, co - 55, co - 87]]
+                               if (i >= radix):
+                                   raise #illegalforradix[i, radix]
+                               value := (value * radix) + i
+    
+                           if frac:
+                               value := inexact[value / radix ** frac.length]
+    
+                           #value[value]
+    
+                       #void [] -> #void[]
+                       x ->
+                           <> #unknown[x]
+
+            rval % [location = Location[src, start..end]]
+
+
 provide:
-    tokenize
+    raw_tokenize
     striploc
+    tokenize
 
 

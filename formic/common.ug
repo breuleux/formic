@@ -161,6 +161,8 @@ htmlpr =
     ]
     #raw [s] -> s
 
+    #cat [] -> ""
+    #cat [thing] -> htmlpr thing
     #cat [*things] -> (++) things each htmlpr
 
     #matrix [*rows] ->
@@ -234,8 +236,24 @@ _Rxe =
 Rxe = x -> Rx(_Rxe x)
 
 
+
+;; ANNOTATIONS
+
+(%) =
+    [x, []] ->
+        x
+    [x, ann] ->
+        do ann each Pair [k, v] ->
+            x := ann1[x, k, v]
+        x
+
+
 provide:
     join
     (<>), Repr, textpr, htmlpr
     Rxe
+    (%)
+
+
+
 

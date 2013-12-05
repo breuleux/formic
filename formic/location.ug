@@ -103,3 +103,9 @@ highlight_locations = [=> context = 0, **locations] ->
         locations each Pair [loc, cls] -> [loc.range, [cls]]
     ]
 
+
+provide:
+    Source
+    Location
+    merge_locations
+
