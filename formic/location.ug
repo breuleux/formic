@@ -32,13 +32,18 @@ Source = [text, url = false] ->
         r when (r == repr) ->
             #struct[repr[.Source], repr[url]]
 
-        .highlight_lines -> [Range lrange, spans = nil] ->
-            Repr[highlight_lines[text, lines, lrange, spans]]
+        .highlight_lines -> [Range lrange, spans = nil, => raw = false] ->
+            hl = highlight_lines[text, lines, lrange, spans]
+            if[raw, hl, Repr[hl]]
 
     self
 
 
-Location = [source, Range [start, end]] ->
+Location =
+  context = dyn[0]
+
+  .context -> context
+  [source, Range [start, end]] ->
 
     self =
         .source -> source
@@ -80,6 +85,9 @@ Location = [source, Range [start, end]] ->
         #dispatch[0, x] when (x == (+)) -> [loc2] ->
             merge_locations[self, loc2]
 
+        x when (x == repr) ->
+            highlight_locations[self => "hl1", context = @context, raw = true]
+
     self
 
 
@@ -92,7 +100,7 @@ merge_locations = Vector locations ->
         Location[locations[0].source, start..end]
 
 
-highlight_locations = [=> context = 0, **locations] ->
+highlight_locations = [=> context = 0, => raw = false, **locations] ->
     loc = merge_locations(V locations each Pair [loc, cls] -> loc)
     source = loc.source
     Range [line1, line2] = loc.linerange
@@ -101,6 +109,7 @@ highlight_locations = [=> context = 0, **locations] ->
     source.highlight_lines[
         first .. last
         locations each Pair [loc, cls] -> [loc.range, [cls]]
+        raw = raw
     ]
 
 

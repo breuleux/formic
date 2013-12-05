@@ -148,8 +148,6 @@ OperatorMatrix =
                         if (matrix[i][j] == 0):
                             changes = fill_intersection[i, j]
                             changed := changed or changes
-                ;;if not(changed):
-                ;;    (false, break)
 
         .set_relation -> [left, right, value] ->
             matrix[to_index[left]][to_index[right]] := value
@@ -368,13 +366,18 @@ formic_op_matrix = make_formic_op_matrix[]
 formic_order = make_order[formic_op_matrix, formic_groups]
 
 formic_finalize = [MVector [MVector[*ops], *args]] ->
+
     loc = (+) chain[ops, args] each
                   Ann [arg, [location => l, **_]] -> l
+
     match ops:
+
         [#operator[.infix, width, ""], *_] ->
             #juxt[*args] % [location = loc, width = width]
+
         [#operator[.infix, _, ","], *_] ->
             #seq[*args] % [location = loc]
+
         [#operator[.prefix, _, open], #operator[.suffix, _, close]] ->
             [#void[], arg, #void[]] = args
             rval = match arg:
@@ -389,8 +392,17 @@ formic_finalize = [MVector [MVector[*ops], *args]] ->
                         "[]" -> #sqbr[arg]
                         "{}" -> #cubr[arg]
             rval % [location = loc]
+
         [#operator[fixity, width, name]] ->
-            #op[name.sym, *args] % [location = loc, width = width]
+            op = name.sym %<< ops[0]
+            match args:
+                [#void[], #void[]] -> op
+                _ ->
+                    #juxt[op, #sqbr(args) % [location = loc]] % [
+                        location = loc, width = width, operator = true
+                ]
+            ;; #op[name.sym, *args] % [location = loc, width = width]
+
         x ->
             <> #unknown[x]
 

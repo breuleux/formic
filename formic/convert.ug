@@ -50,6 +50,8 @@ graph = [data] ->
             ["set!", v, G[value]]
         #begin[*args] ->
             [.begin, *(args map wrap map G)]
+        #send[#value[d], #seq[#seq[*vars], #lambda[[], body]]] when (d is dynlet) ->
+            [.parameterize, vars map #seq[a, b] -> [G[a], G[b]], G[body]]
         #send[#value[d], #seq[#lambda[_, body]]] when (d is delay) ->
             [.lazy, G[body]]
         #send[f, #seq[*args]] ->

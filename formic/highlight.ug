@@ -98,19 +98,3 @@ provide:
     highlight, Highlight
     highlight_lines
 
-
-;; txt = "hello world!"
-;; ;; spans = [[0, txt.length, ["hlE"]], [4, 8, ["hl2"]], [2, 5, ["hl1"]]]
-
-;; spans = [[0..txt.length, ["hlE"]], [2..8, ["hl2"]], [4..4, ["hl1"]]]
-;; hl = Highlight[txt, spans]
-
-;; <> hl
-
-
-
-
-;; spans = [[0, 10, [1]], [2, 5, [2]], [4, 7, [3]], [40, 50, [4]]]
-
-;; <> morsel[spans, 6..31]
-

@@ -58,6 +58,11 @@
         a)
       a))
 
+(define (@ _ x)
+  (ugcall x))
+
+(define dyn make-parameter)
+
 (define (inexact n)
   (exact->inexact n))
 
@@ -127,12 +132,21 @@
 
 ;; GENERAL SEND
 
+(define (proxy-app object message)
+  (let* ((type (variant object))
+         (proxy (hash-ref proxies type #f)))
+    (if proxy
+        ((proxy object) message)
+        (error "Could not find a proxy for" type object "to send" message))))
+
 (define (ugsend object message)
   (cond
    ((promise? object)
     (ugsend (force object) message))
    ((s-ann? object)
     (ugsend (s-ann-object object) message))
+   ;; ((parameter? object)
+   ;;  ((__parameter_proxy object) message))
    ((procedure? object)
     (let ((message (if (promise? message) (force message) message)))
       (cond
@@ -141,18 +155,16 @@
        ((null? message)
         (object))
        ((pair? message)
-        (apply object (force-list message))))))
+        (apply object (force-list message)))
+       (#t
+        (proxy-app object message)))))
    ;; ((and (procedure? object)
    ;;       (vector? message))
    ;;  (apply object (vector->list message)))
    ((prefab-struct-key object)
     ((__struct_proxy object) message))
    (#t
-    (let* ((type (variant object))
-           (proxy (hash-ref proxies type #f)))
-      (if proxy
-          ((proxy object) message)
-          (error "Could not find a proxy for" type object "to send" message))))))
+    (proxy-app object message))))
 
 (define (ugsend-soft object message)
   (cond
@@ -1904,6 +1916,9 @@
 
 
 
+
+
+
 (define (__check_equal value)
   (let ((value (extract value)))
    (proxy
@@ -2070,6 +2085,8 @@
 
  ann1
  %<<
+ @
+ dyn
  inexact
  all
  pr
