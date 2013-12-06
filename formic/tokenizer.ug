@@ -90,6 +90,10 @@ standard_matchers = Obj!
             regexp = Rxe.({"."}, except ^=chr.op)
             constructor = #operator[.prefix, 1]
             spangroup = 1
+        Obj!
+            leads = "\n"
+            regexp = Rxe.("\n", {" "*})
+            constructor = #indent[1]
 
     oper = Obj!
         leads = chr.op
@@ -116,7 +120,7 @@ fold_matchers =
 rules = V fold_matchers(standard_matchers each Pair[_, x] -> x)
 
 
-SubTokenizer = [rules, ws_re] ->
+SubTokenizer = [rules, wsb_re, wsa_re] ->
 
     rulemap = mut V(0..129 each i -> mut [])
 
@@ -129,15 +133,19 @@ SubTokenizer = [rules, ws_re] ->
                 i = min[c.numcode, 128]
                 rulemap[i].push[rest]
 
-    ws = [text, pos] ->
-        [Range [start, end]] = ws_re.match_pos[text, pos]
+    ws_b = [text, pos] ->
+        [Range [start, end]] = wsb_re.match_pos[text, pos]
+        end - start
+
+    ws_a = [text, pos] ->
+        [Range [start, end]] = wsa_re.match_pos[text, pos]
         end - start
 
     read = [text, pos] ->
         if (pos >= text.length):
             [token = false, skip = 0]
         else:
-            wsb = ws[text, pos]
+            wsb = ws_b[text, pos]
             pos2 = pos + wsb
             rules = rulemap[min[text[pos2].numcode, 128]]
             do rules each
@@ -146,7 +154,7 @@ SubTokenizer = [rules, ws_re] ->
                     groups = rxp.match_pos[text, if[take_wsb, pos2, pos]]
                     if groups:
                         Range [start, end] = groups[spangroup]
-                        whitespace = [wsb, if[take_wsa, ws[text, end], 0]]
+                        whitespace = [wsb, if[take_wsa, ws_a[text, end], 0]]
                         location = #location[start, end, whitespace]
                         args = V indices each
                                    Number i ->
@@ -170,6 +178,71 @@ GentokensMaker = [read] ->
                 token :: gentokens[text, pos + skip]
             _ -> nil
     gentokens
+
+
+_indent_handler = [tokens, cont] ->
+
+    current_indent = false
+    indent_stack = mut []
+
+    process =
+
+        nil _ -> nil
+
+        Pair [token, rest] ->
+
+            ;; <> token
+
+            match token:
+                #indent[loc, txt] ->
+                    new_indent = txt.length
+                    insert =
+                        if (current_indent):
+                            if (new_indent > current_indent):
+                                indent_stack.push[current_indent]
+                                current_indent := new_indent
+                                #location[start, end, [wsb, wsa]] = loc
+                                [#operator[#location[start, end, [1, 1]], .prefix, "("]]
+                            elif (new_indent == current_indent):
+                                [#operator[loc, .infix, ","]]
+                            else:
+                                rval = #operator[loc, .infix, ","] :: nil
+                                while (new_indent < current_indent and not(indent_stack.empty)):
+                                    current_indent := indent_stack.pop[]
+                                    rval := #operator[loc, .suffix, ")"] :: rval
+
+                                if (new_indent < current_indent and indent_stack.empty):
+                                    current_indent := .inconsistent
+
+                                ;; if (not (current_indent == new_indent)):
+                                ;;     raise #indentmismatch[]
+                                rval
+                        else:
+                            current_indent := new_indent
+                            [#operator[loc, .infix, ","]]
+
+                    chain[insert, process rest]
+
+                #operator[loc, .prefix, bracket] when (bracket in {"(", "[", "{"}) ->
+                    if (current_indent == .inconsistent):
+                        raise #indenterror[]
+                    else:
+                        token :: _indent_handler[rest, process]
+
+                #operator[loc, .suffix, bracket] when (bracket in {")", "]", "}"}) ->
+                    chain[indent_stack each _ -> #operator[loc, .suffix, ")"]
+                          token :: (cont rest)]
+
+                other ->
+                    if (current_indent == .inconsistent):
+                        raise #indenterror[]
+                    else:
+                        other :: (process rest)
+
+    process tokens
+
+indent_handler = tokens ->
+    _indent_handler[tokens, x -> (raise #imbalancedparens[])]
 
 
 FixityDisambiguator = [inherent_fixity] ->
@@ -305,7 +378,7 @@ sandwich = [ctor, args] -> [left, right] ->
 
 
 
-subt = SubTokenizer[rules, Rx" *"]
+subt = SubTokenizer[rules, Rx" *", Rx"\n| *"]
 
 gentokens = GentokensMaker[subt]
 
@@ -320,6 +393,7 @@ raw_tokenize = [txt] ->
         sandwich[#operator, [.infix, ""]]
 
     tokens = all gentokens[txt]
+    tokens := all (indent_handler tokens)
     tokens := all (disambiguate tokens)
     tokens := all (alternator tokens)
     tokens

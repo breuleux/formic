@@ -1191,6 +1191,8 @@
     `#s(vector ,@(map repr (vector->list v))))
    ('length
     (vector-length v))
+   ('empty
+    (= (vector-length v) 0))
    ('first
     (vector-ref v 0))
    ('last
@@ -1283,6 +1285,8 @@
     (gvector-ref v index))
    ('length
     (gvector-count v))
+   ('empty
+    (= (gvector-count v) 0))
    ('find
     (lambda (value)
       (let loop ((i 0))
