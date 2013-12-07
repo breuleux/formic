@@ -73,6 +73,29 @@
 (define (empty x)
   (null? (force (iter x))))
 
+
+(define (_zip lists)
+  (let* ((lists (map (lambda (x) (extract x)) lists))
+         (first (car lists))
+         (rest (cdr lists)))
+    (if (null? first)
+        (begin
+          (for-each
+           (lambda (x)
+             (if (not (null? x))
+                 (error "Lists are not the same length!")
+                 #t))
+           rest)
+          '())
+        (cons (apply vector-immutable (map car lists))
+              (lazy (_zip (map cdr lists)))))))
+
+(define (zip . lists)
+  (if (null? lists)
+      '()
+      (_zip (map iter lists))))
+
+
 (define (_chain xs . others)
   (if (null? others)
       xs
@@ -368,8 +391,16 @@
   (ugsend obj deconstructor))
 (define (iter obj)
   ((ugsend obj iter)))
+
+(define reprhook
+  (make-parameter (lambda (obj rec) (rec obj))))
 (define (repr obj)
-  (ugsend obj repr))
+  ((reprhook)
+   obj
+   (lambda (obj) (ugsend obj repr))))
+
+;; (define (repr obj)
+;;   (ugsend obj repr))
 
 (define all
   (proxy
@@ -2096,6 +2127,8 @@
  pr
  empty
  repr
+ reprhook
+ zip
  chain
  enumerate
  neighbours

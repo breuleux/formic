@@ -254,7 +254,7 @@ formic_groups = OperatorGroups[
     (when) = ["X_when_Y"]
     decl = ["X_->_Y", "X_=_Y", "X_:=_Y", "X_!!_Y", "X_$_Y"]
     assoc = ["X_=>_Y", "=>_Y"]
-    stmt = ["X_,_Y"]
+    stmt = ["X_,_Y", "X_NL_Y"]
 
     ;; Brackets
     open = ["(_Y", "[_Y", "{_Y"]
@@ -375,8 +375,26 @@ formic_finalize = [MVector [MVector[*ops], *args]] ->
         [#operator[.infix, width, ""], *_] ->
             #juxt[*args] % [location = loc, width = width]
 
-        [#operator[.infix, _, ","], *_] ->
-            #seq[*args] % [location = loc]
+        [#operator[.infix, _, nl], *_] when (nl in {",", "NL"}) ->
+            ;; We remove #void[] tokens if they are next to newlines,
+            ;; so that consecutive newlines, or "," followed by a
+            ;; newline, do not cause a spurious void token to be
+            ;; located in-between them. Consecutive commas, on the
+            ;; other hand, _do create void tokens between them, i.e.
+            ;; [x,y] and [x,,y] are not the same thing.
+
+            types = chain[[","], ops each #operator[_, _, x] -> x, [","]]
+            rval = #seq
+                zip[neighbours[types], args, args] each
+                    [[",", ","], #void[], x] ->
+                        x
+                    [_, #void[], _] ->
+                        false, continue
+                    [_, _, arg] ->
+                        arg
+            rval % [location = loc]
+
+            ;; #seq[*args] % [location = loc]
 
         [#operator[.prefix, _, open], #operator[.suffix, _, close]] ->
             [#void[], arg, #void[]] = args
@@ -388,7 +406,9 @@ formic_finalize = [MVector [MVector[*ops], *args]] ->
                         "{}" -> #cubr[*args]
                 arg ->
                     match (open ++ close):
-                        "()" -> arg
+                        "()" ->
+                            Ann [_, [=> parnest = 0, **_]] = arg
+                            arg % [parnest = parnest + 1]
                         "[]" -> #sqbr[arg]
                         "{}" -> #cubr[arg]
             rval % [location = loc]
@@ -410,7 +430,10 @@ formic_finalize = [MVector [MVector[*ops], *args]] ->
 parse = [txt, url = false] ->
     src = Source[txt, url]
     tokens = tokenize[src]
-    operator_parse[iter[tokens], formic_order, formic_finalize]
+    rval = operator_parse[iter[tokens], formic_order, formic_finalize]
+    match rval:
+        #seq[*things] -> #begin[*things]
+        x -> x
 
 
 provide:

@@ -77,7 +77,7 @@ standard_matchers = Obj!
             regexp = Rxe.{","}
             constructor = #operator[.infix, 1]
         Obj!
-            leads = ".."
+            leads = "."
             regexp = Rxe.{"." * (2..)}
             constructor = #operator[.unknown, 1]
         Obj!
@@ -92,7 +92,7 @@ standard_matchers = Obj!
             spangroup = 1
         Obj!
             leads = "\n"
-            regexp = Rxe.("\n", {" "*})
+            regexp = Rxe.(("\n", {" "*})+)
             constructor = #indent[1]
 
     oper = Obj!
@@ -204,9 +204,9 @@ _indent_handler = [tokens, cont] ->
                                 #location[start, end, [wsb, wsa]] = loc
                                 [#operator[#location[start, end, [1, 1]], .prefix, "("]]
                             elif (new_indent == current_indent):
-                                [#operator[loc, .infix, ","]]
+                                [#operator[loc, .infix, "NL"]]
                             else:
-                                rval = #operator[loc, .infix, ","] :: nil
+                                rval = #operator[loc, .infix, "NL"] :: nil
                                 while (new_indent < current_indent and not(indent_stack.empty)):
                                     current_indent := indent_stack.pop[]
                                     rval := #operator[loc, .suffix, ")"] :: rval
@@ -219,7 +219,7 @@ _indent_handler = [tokens, cont] ->
                                 rval
                         else:
                             current_indent := new_indent
-                            [#operator[loc, .infix, ","]]
+                            [#operator[loc, .infix, "NL"]]
 
                     chain[insert, process rest]
 
