@@ -57,7 +57,14 @@ operator_parse = [tokenizer, order, finalize] ->
                     between := it[]
                     right_op := (it[] !! #eos [] -> false)
                 _ ->
-                    raise #UnknownOrder[ord, left_op, right_op]
+                    Ann [_, [location => loc1, **_]] = left_op
+                    Ann [_, [location => loc2, **_]] = right_op
+                    raise Error.syntax.noorder[
+                        message = "The operators could not be ordered."
+                        location = loc1 | loc2
+                        left = left_op
+                        right = right_op
+                    ]
 
 
 OperatorMatrix =
@@ -217,7 +224,10 @@ OperatorGroups = [**_groups] ->
             escape return:
                 do fns each Pair [fn, i] ->
                     if[fn[o], return i]
-                raise #unknownoperator[o]
+                raise Error.syntax.unknown[
+                    message = "Unknown operator."
+                    operator = o
+                ]
 
 
 formic_groups = OperatorGroups[

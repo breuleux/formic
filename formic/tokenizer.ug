@@ -225,7 +225,7 @@ _indent_handler = [tokens, cont] ->
 
                 #operator[loc, .prefix, bracket] when (bracket in {"(", "[", "{"}) ->
                     if (current_indent == .inconsistent):
-                        raise #indenterror[]
+                        raise Error.syntax.badindent[]
                     else:
                         token :: _indent_handler[rest, process]
 
@@ -235,14 +235,14 @@ _indent_handler = [tokens, cont] ->
 
                 other ->
                     if (current_indent == .inconsistent):
-                        raise #indenterror[]
+                        raise Error.syntax.badindent[]
                     else:
                         other :: (process rest)
 
     process tokens
 
 indent_handler = tokens ->
-    _indent_handler[tokens, x -> (raise #imbalancedparens[])]
+    _indent_handler[tokens, x -> (raise Error.syntax.unbalanced_brackets[])]
 
 
 FixityDisambiguator = [inherent_fixity] ->
@@ -423,6 +423,7 @@ tokenize = [src] ->
             #operator[fixity, width, op] % [location = Location[src, start..end]]
 
         Struct [ctor, #location[start, end, [wsb, wsa]], *rest] ->
+            loc = Location[src, start..end]
             rval = match ctor(rest):
     
                        #id [id] ->
@@ -449,13 +450,19 @@ tokenize = [src] ->
                            codepoints = chain[(int or "").codepoints
                                               (frac or "").codepoints]
                            value = 0
-    
+
                            do codepoints each c ->
                                co = c.numcode
                                i = if[co < 58, co - 48
                                       if[co < 91, co - 55, co - 87]]
                                if (i >= radix):
-                                   raise #illegalforradix[i, radix]
+                                   raise Error.syntax.illegal_digit[
+                                       message = "Illegal digit for the given radix."
+                                       location = loc
+                                       radix = radix
+                                       digit = c
+                                       digit_value = i
+                                   ]
                                value := (value * radix) + i
     
                            if frac:
@@ -467,7 +474,7 @@ tokenize = [src] ->
                        x ->
                            <> #unknown[x]
 
-            rval % [location = Location[src, start..end]]
+            rval % [location = loc]
 
 
 provide:

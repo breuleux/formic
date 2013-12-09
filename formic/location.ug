@@ -21,7 +21,11 @@ Source = [text, url = false] ->
         .nlines -> lines.length
         .linecol -> [pos] ->
             if (pos < 0 or pos > text.length):
-                raise #outofbounds[pos, self]
+                raise Error.source.outofbounds[
+                    source = self
+                    position = pos
+                    length = text.length
+                ]
             current = -1
             do enumerate[lines, 1] each [i, n] ->
                 if (pos == n):
@@ -33,7 +37,8 @@ Source = [text, url = false] ->
             #struct[repr[.Source], repr[url]]
 
         .highlight_lines -> [Range lrange, spans = nil, => raw = false] ->
-            hl = highlight_lines[text, lines, lrange, spans]
+            hl0 = highlight_lines[text, lines, lrange, spans]
+            hl = #attr[#set["lines"], hl0]
             if[raw, hl, Repr[hl]]
 
     self
@@ -62,7 +67,7 @@ Location =
                 [[l1, c1], source.linecol[incl_end]]
 
         .linerange ->
-            source.linecol[start][0] .. (source.linecol[end][1] + 1)
+            source.linecol[start][0] .. (source.linecol[end][0] + 1)
 
         .ref ->
             match self.linecol:
@@ -85,10 +90,37 @@ Location =
         #dispatch[0, x] when (x == (+)) -> [loc2] ->
             merge_locations[self, loc2]
 
+        #dispatch[0, x] when (x == (|)) -> [loc2] ->
+            LocationComplex[self, loc2]
+
         x when (x == repr) ->
-            highlight_locations[self => "hl1", context = @context, raw = true]
+            #attr[#set["location"]
+                  #group[#group[repr[source.url or Repr[#text["<unknown>"]]]]
+                         #group[#text[self.ref]]]
+                  highlight_locations[self => "hl1", context = @context, raw = true]]
 
     self
+
+
+LocationComplex = [*_locations] ->
+
+    locations = V
+        chain _locations each loc ->
+            loc.locations !! [loc]
+
+    .locations -> locations
+
+    #dispatch[0, x] when (x == (|)) -> [loc2] ->
+        LocationComplex[*locations, loc2]
+
+    x when (x == repr) ->
+        highlights = A enumerate[locations] each [i, loc] ->
+                         loc :: ("hl" ++ String[i + 1])
+        source = locations[0].source
+        #attr[#set["location"]
+              #group[#group[repr[source.url or Repr[#text["<unknown>"]]]]
+                     #cat(locations each loc -> #group[#text[loc.ref]])]
+              _highlight_locations[highlights, @(Location.context), true]]
 
 
 merge_locations = Vector locations ->
@@ -101,11 +133,14 @@ merge_locations = Vector locations ->
 
 
 highlight_locations = [=> context = 0, => raw = false, **locations] ->
+    _highlight_locations[locations, context, raw]
+
+_highlight_locations = [locations, context, raw] ->
     loc = merge_locations(V locations each Pair [loc, cls] -> loc)
     source = loc.source
     Range [line1, line2] = loc.linerange
     first = max[1, line1 - context]
-    last = min[source.nlines, line2 + context] + 1
+    last = min[source.nlines + 1, line2 + context]
     source.highlight_lines[
         first .. last
         locations each Pair [loc, cls] -> [loc.range, [cls]]

@@ -4,6 +4,9 @@
 (require data/gvector)
 
 
+(require "prim.scm")
+
+
 ;; UTILITIES
 
 (define-syntax-rule (push-back! x y)
@@ -156,8 +159,8 @@
 ;; GENERAL SEND
 
 (define (proxy-app object message)
-  (let* ((type (variant object))
-         (proxy (hash-ref proxies type #f)))
+  (let* ((type (typekey object)) ;; (variant object))
+         (proxy (hash-ref proxy-map type #f)))
     (if proxy
         ((proxy object) message)
         (error "Could not find a proxy for" type object "to send" message))))
@@ -204,7 +207,7 @@
      ((__struct_proxy object) message)))
    (#t
     (let* ((type (variant object))
-           (proxy (hash-ref proxies type #f)))
+           (proxy (hash-ref proxy-map type #f)))
       (if proxy
           (getfail
            ((proxy object) message))
@@ -220,14 +223,15 @@
 ;; HASH TABLE CONTAINING PROXIES FOR SEND
 ;; typename -> (lambda (object message) ...)
 
-(define proxies (make-hasheq))
+;; (define proxies (make-hasheq))
 
 
 ;; Clause maps
 
 (struct
  clause-map
- (clauses))
+ (clauses)
+ #:transparent)
 
 (define (send-to-clause-map-noerr cmap clauses message i errors all-guard?)
   (if (= i (vector-length clauses))
@@ -334,6 +338,9 @@
 (struct s-ann (object annotations)
  #:transparent
  #:reflection-name 'ann)
+(struct s-err (tags fields)
+ #:transparent
+ #:reflection-name 'err)
 
 ;; Raised structures
 ;; Control flow
@@ -362,16 +369,78 @@
 
 ;; Proxy
 
-(struct proxy (f)
- #:transparent
- ;; #:property prop:procedure
- ;; (lambda (self obj)
- ;;   ((proxy-f self) obj))
- )
-
 (define (__proxy_proxy p)
   (lambda (message)
     ((proxy-f p) message)))
+
+;; Record proxy
+
+(define record-map (make-hasheq))
+
+(define (register_record key proxy)
+  (hash-set! record-map key proxy))
+
+(define (__record_proxy s)
+  (let-values (((type _) (struct-info s)))
+    (let ((prox (hash-ref record-map type)))
+      (prox s))))
+
+;; Errors
+
+(define (tagset tags)
+  (list->set (vector->list tags)))
+
+(define (__error_type tags)
+  (proxy
+   (match-lambda
+    ((s-assoc (vector fields ...))
+     (s-err tags
+            (make-immutable-hash fields)))
+    ((? symbol? s)
+     (__error_type (vector-append tags (vector s))))
+     ;; (__error_type (set-add tags s)))
+    ((== projector eq?)
+     (lambda (value)
+       (let* ((value (extract value))
+              (tags (tagset tags)))
+         (if (s-err? value)
+             (if (equal? tags (set-intersect tags (tagset (s-err-tags value))))
+                 value
+                 (error "not the right tags"))
+             (error "not an Error")))))
+    ((== deconstructor eq?)
+     (lambda (value)
+       (let* ((value (extract value))
+              (tags (tagset tags)))
+         (if (s-err? value)
+             (if (equal? tags (set-intersect tags (tagset (s-err-tags value))))
+                 (s-err-fields value)
+                 (error "not the right tags"))
+             (error "not an Error"))))))))
+
+(define Error (__error_type '#()))
+
+(define (__error_proxy e)
+  (match-lambda
+   ((? symbol? s)
+    (hash-ref (s-err-fields e) s))
+   ((== repr eq?)
+    (let* ((f (hash-copy (s-err-fields e)))
+           (msg (extract (hash-ref f 'message #f)))
+           (loc (extract (hash-ref f 'location #f)))
+           (fields (hash->list f)))
+           ;; (locs (cond
+           ;;        ((vector? loc) (apply __union (vector->list loc)))
+           ;;        ((pair? loc) (apply __union loc))
+           ;;        (#t loc))))
+      (hash-remove! f 'message)
+      (hash-remove! f 'location)
+      `#s(error
+          ,(repr (s-err-tags e))
+          ,(if msg `#s(group #s(text ,msg)) #s(void))
+          ,(if loc (repr loc) #s(void))
+          ,(repr f))))))
+
 
 
 ;; messages
@@ -1367,8 +1436,14 @@
 (define Assoc
   (proxy
    (match-lambda
+    ((? promise? p)
+     (ugsend Assoc (force p)))
     ((? vector? v)
      (s-assoc v))
+    ((? pair? p)
+     (s-assoc (list->vector (force-list p))))
+    ((? null? p)
+     (s-assoc #()))
     ((== projector eq?)
      (lambda (value)
        (check value s-assoc? "Not an assoc!")))
@@ -1532,6 +1607,9 @@
           (hash-ref t (extract key) default)))
        ('length
         (hash-count t))
+       ('has_key
+        (lambda (key)
+          (hash-has-key? t key)))
        ((== repr eq?)
         `#s(table ,@(map repr (hash->list t))))
        ((== mut eq?)
@@ -1549,6 +1627,9 @@
           (hash-ref t (extract key) default)))
        ('length
         (hash-count t))
+       ('has_key
+        (lambda (key)
+          (hash-has-key? t key)))
        ((m-assign (vector item) value)
         (hash-set! t item value))
        ((== repr eq?)
@@ -1973,32 +2054,40 @@
                (loop))
         last)))
 
+(register_proxy 'fixnum_integer __number_proxy)
+(register_proxy 'bignum_integer __number_proxy)
+(register_proxy 'fractional_number __number_proxy)
+(register_proxy 'inexact_number __number_proxy)
+(register_proxy 'complex_number __number_proxy)
 
-(hash-set! proxies 'struct:proxy __proxy_proxy)
-(hash-set! proxies 'struct:clause-map __clause-map_proxy)
+(register_proxy 'string __string_proxy)
+(register_proxy 'symbol __symbol_proxy)
+(register_proxy 'regexp __regexp_proxy)
+(register_proxy 'char __char_proxy)
 
-(hash-set! proxies 'struct:fixnum-integer __number_proxy)
-(hash-set! proxies 'struct:bignum-integer __number_proxy)
-(hash-set! proxies 'struct:inexact-number __number_proxy)
-(hash-set! proxies 'struct:fractional-number __number_proxy)
-(hash-set! proxies 'struct:string __string_proxy)
-(hash-set! proxies 'struct:symbol __symbol_proxy)
-(hash-set! proxies 'struct:char __char_proxy)
+(register_proxy 'pair __pair_proxy)
+(register_proxy 'vector __vector_proxy)
+(register_proxy 'mvector __mvector_proxy)
+(register_proxy 'table __table_proxy)
+(register_proxy 'mtable __table_proxy)
+(register_proxy 'set __set_proxy)
+(register_proxy 'mset __set_proxy)
+(register_proxy 'struct __struct_proxy)
+(register_proxy 'record __record_proxy)
 
-(hash-set! proxies 'struct:vector __vector_proxy)
-(hash-set! proxies 'struct:assoc __assoc_proxy)
-(hash-set! proxies 'struct:set __set_proxy)
-(hash-set! proxies 'struct:hash __table_proxy)
-(hash-set! proxies 'struct:hybrid __hybrid_proxy)
-(hash-set! proxies 'struct:pair __pair_proxy)
-(hash-set! proxies 'struct:range __range_proxy)
-(hash-set! proxies 'struct:regexp __regexp_proxy)
+(register_proxy 'true __true_proxy)
+(register_proxy 'false __false_proxy)
+(register_proxy 'nil __nil_proxy)
 
-(hash-set! proxies 'struct:gvector __mvector_proxy)
 
-(hash-set! proxies 'struct:true __true_proxy)
-(hash-set! proxies 'struct:false __false_proxy)
-(hash-set! proxies 'struct:empty-list __nil_proxy)
+(register_record struct:proxy __proxy_proxy)
+(register_record struct:clause-map __clause-map_proxy)
+(register_record struct:s-hybrid __hybrid_proxy)
+(register_record struct:s-assoc __assoc_proxy)
+(register_record struct:s-range __range_proxy)
+(register_record struct:s-err __error_proxy)
+
+;; (register_record struct: ___proxy)
 
 
 ;; ITERATION
@@ -2145,6 +2234,8 @@
  String
  Symbol
  Char
+
+ Error
 
  Vector
  __assoc

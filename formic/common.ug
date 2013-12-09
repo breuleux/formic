@@ -65,7 +65,7 @@ textpr =
 
     #struct_type [name] ->
         (++)["#", textpr name]
-
+        
 
 q = String['"]
 
@@ -93,10 +93,18 @@ html = Symbol tag -> maketag[String[tag], {}]
 span = maketag["span"]
 div = maketag["div"]
 
+esc = [s] ->
+    s.replace[
+        "&" => "&amp;"
+        ">" => "&gt;"
+        "<" => "&lt;"
+        q => "&quot;"
+    ]
+
 htmlpr =
 
     Number n -> span.num[n]
-    String s -> span.str[s]
+    String s -> span.str[esc[s]]
     Symbol s -> span.sym[s]
     Char c -> span.char[c]
     #special[x] -> span.special(x)[x]
@@ -129,12 +137,14 @@ htmlpr =
         htmlpr #hybrid[#vector[], a]
 
     #set [*s] ->
-        ss = s each htmlpr
-        span.set.unordered(V ss)
+        ss = V s each htmlpr
+        span.set.unordered(if[ss.length == 0, .empty, ""])(ss)
     #table [*t] ->
-        ts = t each #pair [x, y] ->
+        ts = V t each #pair [x, y] ->
                htmlpr #mapping[x, y]
-        span.table.unordered(V ts)
+        span.table.unordered(if[ts.length == 0, .empty, ""])(ts)
+        ;; html.table t each #pair [x, y] ->
+        ;;     html.tr[html.td[x], html.td[y]]
 
     #struct [name, *elements] ->
         span.struct("struct_" ++ String[name])!
@@ -156,20 +166,23 @@ htmlpr =
     #attr [#set[*attributes], *children] ->
         span(Set attributes)[*(V children each htmlpr)]
 
+    #error [#vector[*tags], message, loc, fields] ->
+        err = join["."] tags each tag -> String[tag]
+        span.error[span["Error." ++ err], htmlpr message, htmlpr loc, htmlpr fields]
+
     #void _ ->
         span[]
 
-    #text [s] -> s.replace[
-        "&" => "&amp;"
-        ">" => "&gt;"
-        "<" => "&lt;"
-        q => "&quot;"
-    ]
+    #text [s] -> esc[s]
     #raw [s] -> s
 
     #cat [] -> ""
     #cat [thing] -> htmlpr thing
     #cat [*things] -> (++) things each htmlpr
+
+    #group [] -> span[]
+    #group [thing] -> span[htmlpr thing]
+    #group [*things] -> span[(++) things each htmlpr]
 
     #matrix [*rows] ->
         html.table rows each #row[*elems] ->
