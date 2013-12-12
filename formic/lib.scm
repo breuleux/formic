@@ -51,6 +51,9 @@
          (h (if (s-ann? obj) (s-ann-annotations obj) (make-immutable-hash))))
     (s-ann x (hash-set h k v))))
 
+(define (ann obj)
+  (s-ann-annotations obj))
+
 (define (%<< a b)
   (if (s-ann? b)
       (begin
@@ -139,6 +142,22 @@
   (_neighbours (iter xs)))
 
 
+(define (group grouper xs)
+  (if (null? xs)
+      '()
+      (let ((first (car xs))
+            (rest (cdr xs)))
+        (if (null? rest)
+            (cons xs '())
+            (let ((second (car rest))
+                  (rest2 (cdr rest)))
+              (if (grouper first second)
+                  (cons (list first) (group grouper rest))
+                  (let ((results (group grouper rest)))
+                    (cons (cons first (car results))
+                          (cdr results)))))))))
+
+
 
 (define (__patch_table . hashes)
   (make-hash
@@ -213,6 +232,18 @@
            ((proxy object) message))
           (s-fail (vector "Could not find a proxy for" type object)))))))
 
+(define (responds_to object message)
+  (cond
+   ((promise? object)
+    (responds_to (force object) message))
+   ((and (procedure? object)
+         (vector? message))
+    #t)
+   ((clause-map? object)
+    (clause-map-responds-to? object (clause-map-clauses object) message 0))
+   (#t
+    #f)))
+
 (define (ugcall object . args)
   (cond
    ((procedure? object)
@@ -232,6 +263,30 @@
  clause-map
  (clauses)
  #:transparent)
+
+(define (clause-map-responds-to? cmap clauses message i)
+  (if (= i (vector-length clauses))
+      #f
+      (let* ((clause (vector-ref clauses i))
+             (contract (car clause))
+             (guard (cadr clause))
+             (body (caddr clause))
+             (succ-args
+              (call-with-current-continuation
+               (lambda (k)
+                 (call-with-exception-handler
+                  (lambda (exc)
+                    (k (cons #f exc)))
+                  (lambda ()
+                    (cons #t (contract message)))))))
+             (success (car succ-args))
+             (arguments (cdr succ-args)))
+        (if success
+            (if (or (not guard) (apply guard arguments))
+                #t
+                (clause-map-responds-to? cmap clauses message (+ i 1)))
+            (clause-map-responds-to?
+             cmap clauses message (+ i 1))))))
 
 (define (send-to-clause-map-noerr cmap clauses message i errors all-guard?)
   (if (= i (vector-length clauses))
@@ -466,7 +521,14 @@
 (define (repr obj)
   ((reprhook)
    obj
-   (lambda (obj) (ugsend obj repr))))
+   (lambda (obj)
+     (call-with-current-continuation
+      (lambda (k)
+        (call-with-exception-handler
+         (lambda (exc)
+           (k `#s(text ,(~a obj))))
+         (lambda ()
+           (ugsend obj repr))))))))
 
 ;; (define (repr obj)
 ;;   (ugsend obj repr))
@@ -909,6 +971,7 @@
      (error "Cannot match for hole" x)))))
 
 (define Hole __hole)
+(define hole __hole)
 
 ;; true
 (define (__true_proxy _)
@@ -1739,9 +1802,10 @@
        (check value pair? "Not a pair!")))
     ((== deconstructor eq?)
      (lambda (value)
-       (if (pair? value)
-           (vector (car value) (cdr value))
-           (error "Not a pair!" value)))))))
+       (let ((value (extract value)))
+         (if (pair? value)
+             (vector (car value) (cdr value))
+             (error "Not a pair!" value))))))))
 
 ;; Pair instance
 ;; x p[key]                       ==> list-ref
@@ -1809,7 +1873,10 @@
              (if (eq? k tag)
                  (let ((v (struct->vector value)))
                    (vector-copy v 1 (vector-length v)))
-                 (error "Not struct" tag)))))))))
+                 (error "Not struct" tag))))))
+      (x
+       (error "Cannot match for struct type" tag x))
+      )))
   me)
 
 (define Struct
@@ -1830,7 +1897,10 @@
                   (tag (string->symbol (substring (symbol->string tag0) 7))))
              (vector-set! v 0 (__struct-type tag))
              v)
-           (error "Not a struct!")))))))
+           (error "Not a struct!"))))
+    (x
+       (error "Cannot match for Struct" x))
+    )))
 
 ;; Struct instance
 ;; . #x[index]                    ==> entry at index
@@ -2207,7 +2277,9 @@
  ugsend
  ugcall
 
+ responds_to
  ann1
+ ann
  %<<
  @
  dyn
@@ -2221,6 +2293,7 @@
  chain
  enumerate
  neighbours
+ group
  exhaust
  projector
  deconstructor
@@ -2259,6 +2332,7 @@
  Promise
  Ann
  Hole
+ hole
 
  __symbol
  __hole

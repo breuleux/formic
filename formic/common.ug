@@ -259,6 +259,8 @@ Rxe = x -> Rx(_Rxe x)
 ;; ANNOTATIONS
 
 (%) =
+    [x, Symbol s] ->
+        ann[x][s]
     [x, []] ->
         x
     [x, ann] ->
@@ -266,12 +268,14 @@ Rxe = x -> Rx(_Rxe x)
             x := ann1[x, k, v]
         x
 
+(:>) = [type, value] ->
+    (type(projector)[value], true) !! false
 
 provide:
     join
     (<>), Repr, textpr, htmlpr
     Rxe
-    (%)
+    (%), (:>)
 
 
 

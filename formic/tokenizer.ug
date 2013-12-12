@@ -470,7 +470,7 @@ tokenize = [src] ->
     
                            #value[value]
     
-                       #void [] -> #void[]
+                       #void [] -> hole ;; #void[]
                        x ->
                            <> #unknown[x]
 

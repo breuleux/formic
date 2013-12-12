@@ -383,10 +383,10 @@ formic_finalize = [MVector [MVector[*ops], *args]] ->
     match ops:
 
         [#operator[.infix, width, ""], *_] ->
-            #juxt[*args] % [location = loc, width = width]
+            #send[*args] % [location = loc, width = width]
 
         [#operator[.infix, _, nl], *_] when (nl in {",", "NL"}) ->
-            ;; We remove #void[] tokens if they are next to newlines,
+            ;; We remove hole _ tokens if they are next to newlines,
             ;; so that consecutive newlines, or "," followed by a
             ;; newline, do not cause a spurious void token to be
             ;; located in-between them. Consecutive commas, on the
@@ -396,9 +396,9 @@ formic_finalize = [MVector [MVector[*ops], *args]] ->
             types = chain[[","], ops each #operator[_, _, x] -> x, [","]]
             rval = #seq
                 zip[neighbours[types], args, args] each
-                    [[",", ","], #void[], x] ->
+                    [[",", ","], hole _, x] ->
                         x
-                    [_, #void[], _] ->
+                    [_, hole _, _] ->
                         false, continue
                     [_, _, arg] ->
                         arg
@@ -407,28 +407,28 @@ formic_finalize = [MVector [MVector[*ops], *args]] ->
             ;; #seq[*args] % [location = loc]
 
         [#operator[.prefix, _, open], #operator[.suffix, _, close]] ->
-            [#void[], arg, #void[]] = args
+            [hole _, arg, hole _] = args
             rval = match arg:
                 #seq[*args] ->
                     match (open ++ close):
                         "()" -> #begin[*args]
-                        "[]" -> #sqbr[*args]
-                        "{}" -> #cubr[*args]
+                        "[]" -> #ord[*args]
+                        "{}" -> #unord[*args]
                 arg ->
                     match (open ++ close):
                         "()" ->
                             Ann [_, [=> parnest = 0, **_]] = arg
                             arg % [parnest = parnest + 1]
-                        "[]" -> #sqbr[arg]
-                        "{}" -> #cubr[arg]
+                        "[]" -> #ord[arg]
+                        "{}" -> #unord[arg]
             rval % [location = loc]
 
         [#operator[fixity, width, name]] ->
             op = name.sym %<< ops[0]
             match args:
-                [#void[], #void[]] -> op
+                [hole _, hole _] -> op
                 _ ->
-                    #juxt[op, #sqbr(args) % [location = loc]] % [
+                    #send[op, #seq(args) % [location = loc]] % [
                         location = loc, width = width, operator = true
                 ]
             ;; #op[name.sym, *args] % [location = loc, width = width]
@@ -446,6 +446,30 @@ parse = [txt, url = false] ->
         x -> x
 
 
+ast_reprhook = [obj, repr] ->
+    hook = ast_reprhook
+    match obj:
+        Ann [#send[op, #seq[lhs, rhs]], [=> operator, **_]] when operator ->
+            #binop[hook[lhs, repr], hook[op, repr], hook[rhs, repr]]
+        #send[lhs, rhs] ->
+            #attr[#set["send"], #binop[hook[lhs, repr], #void[], hook[rhs, repr]]]
+        #seq[*things] ->
+            #attr[#set["seq"], #group(things each thing -> hook[thing, repr])]
+        #ord[*things] ->
+            #attr[#set["ord"], #group(things each thing -> hook[thing, repr])]
+        #unord[*things] ->
+            #attr[#set["unord"], #group(things each thing -> hook[thing, repr])]
+        #begin[*things] ->
+            #attr[#set["begin"], #group(things each thing -> hook[thing, repr])]
+        hole _ ->
+            repr[[]]
+        #value[x] ->
+            #attr[#set["value"], repr[x]]
+        x -> repr[x]
+
+
+
 provide:
     parse
+    ast_reprhook
 
