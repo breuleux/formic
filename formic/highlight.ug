@@ -43,7 +43,7 @@ morsel = [Vector spans] ->
             [newbot, span] = jump[active, bot, top]
             newactive = active each x ->
                 [_, e, attr] = x
-                if[e <= newbot, (false, continue), x]
+                if[e =< newbot, (false, continue), x]
             [spans, remainder] = jumptill[newactive, newbot, top]
             [span :: spans, remainder]
 

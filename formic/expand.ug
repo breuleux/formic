@@ -1,0 +1,471 @@
+
+
+require:
+    common
+    parser
+
+provide:
+    make_ir
+
+
+Env = [*parents] ->
+  self =
+    d = mut {=}
+
+    [ast, inherit = []] ->
+        #bind_env[self, ast, inherit]
+
+    .bindings ->
+        [Symbol binding] ->
+            d[binding] !!
+                do parents each parent ->
+                    rval = parent.bindings[binding]
+                    if[rval, break rval, rval]
+
+        #assign [[Symbol binding], value] ->
+            if d.has_key[binding]:
+                raise Error.syntax.already_bound[
+                    env = self
+                    binding = binding
+                ]
+            else:
+                d[binding] := match value:
+                        #alpha[name] ->
+                            #alpha[gensym[name]]
+                        #macro[name] ->
+                            #macro[name]
+                        #value v ->
+                            v
+                        z ->
+                            raise Error.huh[node = z, where = "Env"]
+
+    .declare -> [name] ->
+        self.bindings[name] := #alpha[name]
+
+    .update -> [Table t] ->
+        do t each Pair [k, v] ->
+            self.bindings[k] := v
+
+    .fork -> [] ->
+        Env[self]
+
+    .variables -> [] ->
+        V d each Pair [k, v] ->
+            [_, #alpha[name]] -> name
+            _ -> (false, continue)
+
+    #dispatch[0, x] when (x == (|)) -> [other] ->
+        rval = self.fork[]
+        rval.update[other]
+        rval
+
+    x when (x == frz) -> [] -> shut
+
+    x when (x == repr) -> repr[[]] ;; repr[#env[d]]
+
+  shut =
+
+    .bindings ->
+        #assign[[Symbol binding], value] ->
+            raise Error.syntax.immutable_bindings[
+                message = "Cannot bind variables in this context."
+                binding = binding
+                env = self
+            ]
+        x -> self.bindings x
+
+    .declare -> _ -> raise Error.syntax.immutable_bindings[]
+
+    .update -> _ -> raise Error.syntax.immutable_bindings[]
+
+    x -> self x
+
+  self
+
+
+env = dyn[false]
+expand = dyn[false]
+dynenv = env
+context = dyn[.expr]
+
+
+
+scall = [f, *args] -> #send[f, #seq args]
+
+parse_lhs =
+  [env, lhs, dec] ->
+
+    chk = [dec, x] ->
+      if dec:
+        scall[.check, dec, x]
+      else:
+        x
+
+    match lhs:
+
+      ._ ->
+        [nil, chk[dec, #value[false]]]
+
+      Symbol s ->
+        [spec, decvar] =
+          if dec:
+            decvar = gensym[s]
+            [[s, decvar, dec], decvar]
+          else:
+            [[s, false, false], false]
+        [spec :: nil, chk[decvar, #value[s]]]
+
+      #ord[*parts] ->
+        results = parts each part -> parse_lhs[env, part, false]
+        variables = chain results each [v, _] -> v
+        extractor = #seq results each [_, x] -> x
+        [variables, extractor]
+
+      #value v ->
+        if dec:
+          raise Error.syntax[message = "No deconstructor for constant"]
+        [nil, chk[scall[.check_equal, v], #value[false]]]
+
+      #send[.(.), #seq[hole _, Symbol s]] ->
+        parse_lhs[env, #value[s], dec]
+
+      #send[.(-), #seq[hole _, #value[Number n]]] ->
+        parse_lhs[env, #value[-n] %<< lhs, dec]
+
+      #send[.(==), #seq[hole _, expr]] ->
+        if dec:
+          raise Error.syntax[message = "No deconstructor for ==x"]
+        [nil, chk[scall[.check_equal, expand_in_expr[env, expr]], #value[false]]]
+
+      #send[.(*), #seq[Symbol var, hole _]] ->
+        if dec:
+          raise Error.syntax[message = "No deconstructor for *x"]
+        [v, ex] = parse_lhs[env, var, false]
+        [v, scall[.star, ex]]
+
+      #send[.(**), #seq[Symbol var, hole _]] ->
+        if dec:
+          raise Error.syntax[message = "No deconstructor for **x"]
+        [v, ex] = parse_lhs[env, var, false]
+        [v, scall[.dstar, ex]]
+
+      #send[.(=>), #seq[source, dest]] ->
+        if dec:
+          raise Error.syntax[message = "No deconstructor for x => y"]
+        src = match [source, dest]:
+                [#value v, _] -> v
+                [Symbol s, _] -> #value[s]
+                [hole _, Symbol s] -> #value[s]
+                [hole _, #send[_, Symbol s]] -> #value[s]
+                _ -> raise Error.syntax[message = "Could not infer key"]
+        [v, ex] = parse_lhs[env, dest, false]
+        [v, scall[.assoc, src, ex]]
+
+      #send[.(=), #seq[lhs, default]] ->
+        if dec:
+          raise Error.syntax[message = "No deconstructor for x = y"]
+        [v, ex] = parse_lhs[env, lhs, dec]
+        [v, scall[.default, ex, expand_in_expr[env, default]]]
+
+      #send[proj, arg] ->
+        match expand_in_expr[env, proj]:
+          #macro[m] ->
+            if responds_to[m, .declare]:
+              parse_lhs[env, m.declare arg, dec]
+            else:
+              parse_lhs[env, #send[proj, m.value] %<< lhs, dec]
+          x ->
+            match arg:
+              #ord parts ->
+                [vars, extractor] = parse_lhs[env, parts, false]
+                [vars, scall[scall[.deconstructor, x], extractor]]
+              _ ->
+                parse_lhs[env, arg, x]
+
+
+
+expand_macros =
+
+  F =
+
+    [env, Symbol expr] ->
+        ;; Expression is a variable name
+        match env.bindings[expr]:
+            ;; Variable is not found in this env, but it might be
+            ;; bound later.
+            x when not x -> #bind_env[env, expr]
+            ;; Variable is bound but not a macro
+            #alpha[x] -> #bind_env[env, expr]
+            ;; Variable is a macro
+            #macro[x] -> #macro[x]
+            #value v -> v
+            z ->
+                raise Error.huh[node = z, where = "expand_macros"]
+
+    [env, expr] ->
+
+        match expr:
+
+            #send[f, arg] ->
+              let [@dynenv = env]:
+                match expand_in_expr[frz env, f]:
+                  #macro[m] ->
+                    if responds_to[m, .apply]:
+                      (@expand)[env, #bind_env[stdenv.fork[]
+                                               (m.apply arg) %<< expr]]
+                    else:
+                      (@expand)[env, #send[m.value %<< f, arg]]
+                  newf ->
+                    match expand_in_expr[frz env, arg]:
+                      #macro[m] ->
+                        if responds_to[m, .lapply]:
+                          (@expand)[env, #bind_env[stdenv.fork[]
+                                                   (m.lapply f) %<< expr]]
+                        else:
+                          #send[newf, (@expand)[env, m.value %<< arg]]
+                      newarg ->
+                        #send[newf, newarg]
+
+            #begin[*stmts] ->
+                newenv = env.fork[]
+                process =
+                  nil _ -> nil
+                  Pair [stmt, rest] ->
+                    match expand_in_begin[newenv, stmt]:
+                      #macro[m] ->
+                        if responds_to[m, .begin]:
+                          process iter[m.begin rest]
+                        else:
+                          process ((m.value %<< stmt) :: rest)
+                      #splice[*stmts] ->
+                        process chain[stmts, rest]
+                      x ->
+                        x :: (process rest)
+
+                #declare_env[
+                    newenv
+                    #begin (process iter[stmts])
+                ]
+
+            #pair[*args] ->
+                #pair (args each arg -> expand_in_expr[frz env, arg])
+
+            #seq[*args] ->
+                #seq (args each arg -> expand_in_expr[frz env, arg])
+
+            #ord[*args] ->
+
+                fenv = frz env
+
+                process =
+                  nil _ -> [nil, nil]
+                  Pair [stmt, rest] ->
+                    match expand_in_ord[fenv, stmt]:
+                      #splice[*stmts] ->
+                        process chain[stmts, rest]
+                      #macro[m] ->
+                        if responds_to[m, .ord]:
+                          process iter[m.ord rest]
+                        else:
+                          process ((m.value %<< stmt) :: rest)
+                      #dynsplice[arg, .vector] ->
+                        [v, a] = (process rest)
+                        [#dynsplice[arg] :: v, a]
+                      #dynsplice[arg, .assoc] ->
+                        [v, a] = (process rest)
+                        [v, #dynsplice[arg] :: nil]
+                      #assoc[key, value] ->
+                        [v, a] = (process rest)
+                        [v, #pair[key, value] :: a]
+                      x ->
+                        [v, a] = (process rest)
+                        [x :: v, a]
+
+                [v, a] = process iter[args]
+
+                cvt = [arr, patch] ->
+                  arr := group[[x, y] -> (#dynsplice :> x) or (#dynsplice :> y), arr]
+                  converted = V arr each
+                    Pair [#dynsplice[x], nil _] -> x
+                    other -> #seq other
+                  match converted:
+                    [] -> nil
+                    [#seq x] -> x
+                    other -> #send[patch, #seq other]
+
+                match [cvt[v, #value[patch_vector]]
+                       cvt[a, #value[patch_assoc]]]:
+                  [nil _, nil _] -> #seq[]
+                  [v, nil _] -> v
+                  [nil _, a] -> a
+                  [v, a] -> #send[.hybrid, #seq[v, a]]
+
+            ;; #unord[*args] ->
+            ;;     #unord (args each arg -> (@expand)[frz env, arg])
+
+            #bind_env[newenv, expr] ->
+                (@expand)[newenv, expr]
+
+            #bind_env[newenv, expr, inherit] ->
+                env2 = Env[.bindings -> [x] -> if[x in inherit, env[x], false]
+                           newenv]
+                (@expand)[env2, expr]
+
+            #if[*args] ->
+                #if (args each arg -> expand_in_expr[frz env, arg])
+
+            #eqassoc[var, value] ->
+                #eqassoc[var, expand_in_expr[frz env, value]]
+
+            #assign[var, value] ->
+                #assign[expand_in_expr[frz env, var]
+                        expand_in_expr[frz env, value]]
+
+            #declare_env[env2, expr] ->
+                #declare_env[env2, expand_in_expr[env2, expr]]
+            #macro[_] ->
+                expr
+            #value[_] ->
+                expr
+
+            hole _ ->
+                #value[hole]
+
+            x ->
+                raise Error.expand_macros.unknown_node[
+                    message = "unknown node"
+                    node = x
+                    location = (x % .location !! "unknown location".sym)
+                ]
+
+  [env, expr] ->
+    F[env, expr] %<< expr
+
+
+
+expand_in_expr =
+  F =
+    [env, expr] ->
+      let [@expand = expand_in_expr]:
+        expand_macros[env, expr]
+  [env, expr] ->
+    F[env, expr] %<< expr
+
+
+expand_in_begin =
+  F =
+    [env, expr] ->
+      let [@expand = expand_in_begin]:
+        match expr:
+          #splice[*args] ->
+            #splice (args each arg -> expand_in_begin[env, arg])
+          other ->
+            expand_macros[env, expr]
+  [env, expr] ->
+    F[env, expr] %<< expr
+
+
+expand_in_ord =
+  F =
+    [env, expr] ->
+      let [@expand = expand_in_ord]:
+        match expr:
+          #splice[*args] ->
+            #splice (args each arg -> expand_in_ord[env, arg])
+          #dynsplice[arg, type] ->
+            #dynsplice[expand_in_expr[env, arg], type]
+          #assoc[a, b] ->
+            #assoc[expand_in_expr[env, a], expand_in_expr[env, b]]
+          other ->
+            expand_macros[env, expr]
+  [env, expr] ->
+    F[env, expr] %<< expr
+
+
+
+
+alpha_rename =
+  F = [expr] ->
+    match expr:
+
+        Symbol s -> s
+
+        #bind_env[env, Symbol s] ->
+            match env.bindings[s]:
+                #alpha[name] -> name
+                x when (x == false) -> s
+                z ->
+                  raise Error.huh[node = z, where = "alpha_rename"]
+
+        #send[f, arg] ->
+            #send[alpha_rename[f], alpha_rename[arg]]
+
+        #seq[*items] ->
+            #seq (items each item -> alpha_rename[item])
+
+        #pair[*items] ->
+            #pair (items each item -> alpha_rename[item])
+
+        #begin[*items] ->
+            #begin (items each item -> alpha_rename[item])
+
+        #if[*items] ->
+            #if (items each item -> alpha_rename[item])
+
+        #value[_] ->
+            expr
+
+        #assign[var, value] ->
+            #assign[alpha_rename[var], alpha_rename[value]]
+
+        #declare_env[env, expr] ->
+            #declaring[env.variables[], alpha_rename[expr]]
+
+        x ->
+            raise Error.alpha_rename.unknown_node[
+                message = "unknown node"
+                node = x
+                location = (x % .location !! "unknown location".sym)
+            ]
+  [expr] ->
+    F[expr] %<< expr
+
+
+
+
+
+
+emptyenv = Env[]
+
+mac =
+  .apply ->
+    #send [.(+), #seq [a, b]] ->
+        #splice[a, b]
+  .value ->
+    #value[12345]
+
+Star = [type] ->
+  .apply ->
+    #seq[x, hole _] ->
+      #dynsplice[x, type]
+
+fat_arrow =
+  .apply ->
+    #seq[x, y] ->
+      #assoc[x, y]
+
+stdenv = emptyenv | {
+    mac = #macro[mac]
+    (+) = #value[+]
+    (*) = #macro[Star[.vector]]
+    (**) = #macro[Star[.assoc]]
+    (=>) = #macro[fat_arrow]
+}
+
+
+make_ir = [text, url = false] ->
+    p = parse[text, url]
+    p2 = expand_in_expr[stdenv, p]
+    p3 = alpha_rename[p2]
+    p3
+

@@ -80,6 +80,14 @@
   (null? (force (iter x))))
 
 
+(define (unzip v . rest)
+  (let ((l (vector->list v)))
+    (if (null? rest)
+        (map list l)
+        (map (lambda (x y) (cons x y))
+             l (apply unzip rest)))))
+
+
 (define (_zip lists)
   (let* ((lists (map (lambda (x) (extract x)) lists))
          (first (car lists))
@@ -172,6 +180,16 @@
 (define (__patch_vector . vectors)
   (foldr vector-append '#() vectors))
 
+(define (__patch_assoc . assocs)
+  (s-assoc
+   (foldr
+    vector-append
+    '#()
+    (map s-assoc-vector assocs))))
+
+(define patch_table __patch_table)
+(define patch_vector __patch_vector)
+(define patch_assoc __patch_assoc)
 
 
 
@@ -1627,23 +1645,37 @@
 (define (table? t)
   (and (hash? t) (immutable? t)))
 
-(define Table
+(define (_Table type)
+  (define make
+    (case type
+      ((equals) make-immutable-hash)
+      ((eq?) make-immutable-hasheq)))
   (proxy
    (match-lambda
     ((? promise? p)
      (ugsend Table (force p)))
     ((? pair? p)
-     (make-immutable-hash (force-list p)))
+     (make (force-list p)))
     ((? null? p)
-     #hash())
+     (make '()))
     ((? vector? v)
-     (__table v))
+     (make (vector->list v)))
+    ((? s-assoc? a)
+     (make (vector->list (s-assoc-vector a))))
+    ((== equal? eq?)
+     _TableEqual)
+    ((== eq? eq?)
+     _TableEq)
     ((== projector eq?)
      (lambda (value)
        (check value table? "Not a table!")))
     ((== deconstructor eq?)
      (lambda (value)
        (check value table? "Not a table!"))))))
+
+(define _TableEqual (_Table 'equals))
+(define _TableEq (_Table 'eq?))
+(define Table _TableEqual)
 
 ;; Table instance
 ;; x s[key]                       ==> fetch value associated to key
@@ -1677,7 +1709,9 @@
         `#s(table ,@(map repr (hash->list t))))
        ((== mut eq?)
         (lambda ()
-          (make-hash (hash->list t))))
+          (if (hash-eq? t)
+              (make-hasheq (hash->list t))
+              (make-hash (hash->list t)))))
        ((== iter eq?)
         (lambda ()
           (hash->list t))))
@@ -1699,7 +1733,9 @@
         `#s(prop #s(table ,@(map repr (hash->list t))) mutable))
        ((== frz eq?)
         (lambda ()
-          (make-immutable-hash (hash->list t))))
+          (if (hash-eq? t)
+              (make-immutable-hasheq (hash->list t))
+              (make-immutable-hash (hash->list t)))))
        ((== iter eq?)
         (lambda ()
           (hash->list t)))
@@ -2290,6 +2326,7 @@
  repr
  reprhook
  zip
+ unzip
  chain
  enumerate
  neighbours
@@ -2302,6 +2339,10 @@
  frz
  __patch_vector
  __patch_table
+ __patch_assoc
+ patch_vector
+ patch_table
+ patch_assoc
 
  Number
  String
