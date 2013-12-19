@@ -4,15 +4,12 @@ require:
     common
     parser
 
-provide:
-    make_ir
-
 
 Env = [*parents] ->
   self =
     d = mut {=}
 
-    [ast, inherit = []] ->
+    [ast, inherit = {}] ->
         #bind_env[self, ast, inherit]
 
     .bindings ->
@@ -49,9 +46,9 @@ Env = [*parents] ->
     .fork -> [] ->
         Env[self]
 
-    .variables -> [] ->
-        V d each Pair [k, v] ->
-            [_, #alpha[name]] -> name
+    .variables ->
+        V d each
+            Pair [k, #alpha[name]] -> name
             _ -> (false, continue)
 
     #dispatch[0, x] when (x == (|)) -> [other] ->
@@ -61,7 +58,7 @@ Env = [*parents] ->
 
     x when (x == frz) -> [] -> shut
 
-    x when (x == repr) -> repr[[]] ;; repr[#env[d]]
+    x when (x == repr) -> repr[#env[d]]
 
   shut =
 
@@ -110,9 +107,9 @@ parse_lhs =
         [spec, decvar] =
           if dec:
             decvar = gensym[s]
-            [[s, decvar, dec], decvar]
+            [[lhs, decvar, dec], decvar]
           else:
-            [[s, false, false], false]
+            [[lhs, false, false], false]
         [spec :: nil, chk[decvar, #value[s]]]
 
       #ord[*parts] ->
@@ -210,19 +207,20 @@ expand_macros =
               let [@dynenv = env]:
                 match expand_in_expr[frz env, f]:
                   #macro[m] ->
-                    if responds_to[m, .apply]:
-                      (@expand)[env, #bind_env[stdenv.fork[]
-                                               (m.apply arg) %<< expr]]
+                    applied = (m.apply arg !! false)
+                    if applied:
+                      (@expand)[env, #bind_env[(@stdenv).fork[]
+                                               applied %<< expr]]
                     else:
                       (@expand)[env, #send[m.value %<< f, arg]]
                   newf ->
                     match expand_in_expr[frz env, arg]:
                       #macro[m] ->
                         if responds_to[m, .lapply]:
-                          (@expand)[env, #bind_env[stdenv.fork[]
+                          (@expand)[env, #bind_env[(@stdenv).fork[]
                                                    (m.lapply f) %<< expr]]
                         else:
-                          #send[newf, (@expand)[env, m.value %<< arg]]
+                          #send[newf, expand_in_expr[env, m.value %<< arg]]
                       newarg ->
                         #send[newf, newarg]
 
@@ -232,19 +230,22 @@ expand_macros =
                   nil _ -> nil
                   Pair [stmt, rest] ->
                     match expand_in_begin[newenv, stmt]:
-                      #macro[m] ->
+                      #macro [m] ->
                         if responds_to[m, .begin]:
                           process iter[m.begin rest]
                         else:
                           process ((m.value %<< stmt) :: rest)
-                      #splice[*stmts] ->
+                      #declare [var, value, checker] ->
+                        newenv.bindings[var] := #alpha[var]
+                        #setvar[#bind_env[newenv, var], value] :: (process rest)
+                      #splice [*stmts] ->
                         process chain[stmts, rest]
                       x ->
                         x :: (process rest)
 
                 #declare_env[
                     newenv
-                    #begin (process iter[stmts])
+                    (#begin (process iter[stmts])) %<< expr
                 ]
 
             #pair[*args] ->
@@ -260,7 +261,8 @@ expand_macros =
                 process =
                   nil _ -> [nil, nil]
                   Pair [stmt, rest] ->
-                    match expand_in_ord[fenv, stmt]:
+                    result = expand_in_ord[fenv, stmt]
+                    match result:
                       #splice[*stmts] ->
                         process chain[stmts, rest]
                       #macro[m] ->
@@ -270,13 +272,13 @@ expand_macros =
                           process ((m.value %<< stmt) :: rest)
                       #dynsplice[arg, .vector] ->
                         [v, a] = (process rest)
-                        [#dynsplice[arg] :: v, a]
+                        [(#dynsplice[arg] %<< result) :: v, a]
                       #dynsplice[arg, .assoc] ->
                         [v, a] = (process rest)
-                        [v, #dynsplice[arg] :: nil]
+                        [v, (#dynsplice[arg] %<< result) :: nil]
                       #assoc[key, value] ->
                         [v, a] = (process rest)
-                        [v, #pair[key, value] :: a]
+                        [v, (#pair[key, value] %<< result) :: a]
                       x ->
                         [v, a] = (process rest)
                         [x :: v, a]
@@ -314,11 +316,11 @@ expand_macros =
             #if[*args] ->
                 #if (args each arg -> expand_in_expr[frz env, arg])
 
-            #eqassoc[var, value] ->
-                #eqassoc[var, expand_in_expr[frz env, value]]
+            ;; #eqassoc[var, value] ->
+            ;;     #eqassoc[var, expand_in_expr[frz env, value]]
 
-            #assign[var, value] ->
-                #assign[expand_in_expr[frz env, var]
+            #setvar[var, value] ->
+                #setvar[expand_in_expr[frz env, var]
                         expand_in_expr[frz env, value]]
 
             #declare_env[env2, expr] ->
@@ -331,9 +333,12 @@ expand_macros =
             hole _ ->
                 #value[hole]
 
+            false _ ->
+                false
+
             x ->
                 raise Error.expand_macros.unknown_node[
-                    message = "unknown node"
+                    message = "unknown node (A)"
                     node = x
                     location = (x % .location !! "unknown location".sym)
                 ]
@@ -359,6 +364,10 @@ expand_in_begin =
         match expr:
           #splice[*args] ->
             #splice (args each arg -> expand_in_begin[env, arg])
+          #declare[var, value, checker] ->
+            #declare[var
+                     expand_in_expr[env, value]
+                     expand_in_expr[env, checker]]
           other ->
             expand_macros[env, expr]
   [env, expr] ->
@@ -415,15 +424,15 @@ alpha_rename =
         #value[_] ->
             expr
 
-        #assign[var, value] ->
-            #assign[alpha_rename[var], alpha_rename[value]]
+        #setvar[var, value] ->
+            #setvar[alpha_rename[var], alpha_rename[value]]
 
         #declare_env[env, expr] ->
-            #declaring[env.variables[], alpha_rename[expr]]
+            #declaring[env.variables, alpha_rename[expr]]
 
         x ->
             raise Error.alpha_rename.unknown_node[
-                message = "unknown node"
+                message = "unknown node (B)"
                 node = x
                 location = (x % .location !! "unknown location".sym)
             ]
@@ -431,41 +440,18 @@ alpha_rename =
     F[expr] %<< expr
 
 
+stdenv = dyn[Env[]]
 
 
-
-
-emptyenv = Env[]
-
-mac =
-  .apply ->
-    #send [.(+), #seq [a, b]] ->
-        #splice[a, b]
-  .value ->
-    #value[12345]
-
-Star = [type] ->
-  .apply ->
-    #seq[x, hole _] ->
-      #dynsplice[x, type]
-
-fat_arrow =
-  .apply ->
-    #seq[x, y] ->
-      #assoc[x, y]
-
-stdenv = emptyenv | {
-    mac = #macro[mac]
-    (+) = #value[+]
-    (*) = #macro[Star[.vector]]
-    (**) = #macro[Star[.assoc]]
-    (=>) = #macro[fat_arrow]
-}
-
-
-make_ir = [text, url = false] ->
-    p = parse[text, url]
-    p2 = expand_in_expr[stdenv, p]
-    p3 = alpha_rename[p2]
-    p3
-
+provide:
+    expand_macros
+    expand_in_expr
+    expand_in_begin
+    expand_in_ord
+    Env
+    dynenv
+    env
+    expand
+    alpha_rename
+    stdenv
+    parse_lhs

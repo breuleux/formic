@@ -1,0 +1,85 @@
+
+require:
+   common
+   expand
+   parser
+
+
+Star = [type, value] ->
+   .apply -> #seq[x, hole _] ->
+      #dynsplice[x, type]
+   .value ->
+      #value[value]
+
+star = Star[.vector, [a, b] -> a * b]
+dstar = Star[.assoc, [a, b] -> a ** b]
+
+fat_arrow =
+   .apply -> #seq[x, y] ->
+      #assoc[x, y]
+
+equals =
+   .apply -> ast -> match ast: #seq[lhs, rhs] ->
+      [vars, extract] = parse_lhs[@env, lhs, false]
+      match extract:
+         #value [Symbol s] ->
+            [v, false _, false _]  = vars.head
+            declarer =
+               .begin -> stmts ->
+                  rval = #declare[v, rhs, false] %<< ast
+                  rval :: stmts
+               .ord -> stmts ->
+                  rval = #assoc[#value[strip[v]] %<< v, rhs] %<< ast
+                  rval :: stmts
+            #macro[declarer]
+         _ ->
+            raise Error.syntax[message = "Invalid lhs"]
+
+      ;; <> vars
+      ;; <> extract
+      ;; <> "---------------"
+      ;; 1234
+
+
+(@:) = [_, x] -> (@dynenv)[x]
+
+ifmac =
+   .apply ->
+      #ord[a, b, c] ->
+         #if[@:a, @:b, @:c]
+
+colon =
+   .apply ->
+      #seq[#send[head, arg], rhs] ->
+         #send[@:head, #seq[@:arg, @:rhs]]
+      #seq[head, rhs] ->
+         #send[@:head, #seq[hole, @:rhs]]
+
+
+emptyenv = Env[]
+
+the_stdenv = emptyenv | {
+   (+) = #value[+]
+   (-) = #value[-]
+   (/) = #value[/]
+   (*) = #macro[star]
+   (**) = #macro[dstar]
+   (=>) = #macro[fat_arrow]
+   (:) = #macro[colon]
+   (=) = #macro[equals]
+   if = #macro[ifmac]
+}
+
+make_ir = [text, url = false] ->
+    let [@stdenv = the_stdenv]:
+       p = parse[text, url]
+       p2 = expand_in_expr[@stdenv, p]
+       p3 = alpha_rename[p2]
+       p3
+
+
+;; <> make_ir["x = 1, y = 2, x + y, [x = 1, y = 2]"]
+
+
+provide:
+   make_ir

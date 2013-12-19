@@ -49,7 +49,7 @@
 (define (ann1 obj k v)
   (let* ((x (if (s-ann? obj) (s-ann-object obj) obj))
          (h (if (s-ann? obj) (s-ann-annotations obj) (make-immutable-hash))))
-    (s-ann x (hash-set h k v))))
+    (s-ann x (hash-set h (extract k) v))))
 
 (define (ann obj)
   (s-ann-annotations obj))
@@ -164,6 +164,36 @@
                   (let ((results (group grouper rest)))
                     (cons (cons first (car results))
                           (cdr results)))))))))
+
+
+
+(define (mkstx sexp loc)
+  (let* ((sexp (extract sexp))
+         (sexp (if (vector? sexp)
+                   (force-list (iter sexp))
+                   sexp)))
+    (datum->syntax #f sexp loc)))
+
+(define (set-bindings! ns bindings)
+  (for-each
+   (lambda (b)
+     (namespace-set-variable-value! (car b) (cadr b) #f ns))
+   bindings))
+
+
+(define (formicns)
+  (let ((ns (make-base-empty-namespace)))
+    (set-bindings! ns
+     `(
+       (+ ,+)
+       ))
+    ns))
+  ;; (let ((ns (make-empty-namespace)))
+  ;;   (namespace-attach-module
+  ;;    (current-namespace)
+  ;;    'racket/base
+  ;;    ns)
+  ;;   ns))
 
 
 
@@ -941,6 +971,9 @@
     (if (s-ann? realx)
         (s-ann-object realx)
         realx)))
+
+(define (strip x)
+  (extract x))
 
 
 (define-syntax-rule (check x predicate message)
@@ -1728,7 +1761,7 @@
         (lambda (key)
           (hash-has-key? t key)))
        ((m-assign (vector item) value)
-        (hash-set! t item value))
+        (hash-set! t (extract item) value))
        ((== repr eq?)
         `#s(prop #s(table ,@(map repr (hash->list t))) mutable))
        ((== frz eq?)
@@ -2249,7 +2282,7 @@
               (k result)
               exc)))
       (lambda ()
-        (ugsend body #()))))))
+        (ugcall body))))))
 
 
 
@@ -2404,6 +2437,10 @@
  __raise
  __escape
  __while
+
+ mkstx
+ formicns
+ strip
  )
 
 

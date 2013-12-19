@@ -1,0 +1,117 @@
+
+require:
+   common
+   macros
+   parser
+
+
+;; transann =
+;;    x when (x == projector) -> [f] ->
+;;       x -> (f x) %<< x
+
+
+extract_values = [ast, _mapping] ->
+
+   mapping = mut _mapping
+
+   extract = ast ->
+      result = match ast:
+         Symbol s -> ast
+         #begin[] -> ast
+         #begin[*things] ->
+            #begin things each extract
+         #seq[] -> ast
+         #seq[*things] ->
+            #seq things each extract
+   
+         #if[a, b, c] ->
+            #if[extract a, extract b, extract c]
+   
+         #send[f, arg] ->
+            #send[extract f, extract arg]
+   
+         #value[Number n] -> ast
+         #value[String s] -> ast
+         #value[Symbol s] -> ast
+         #value[other] ->
+            if mapping.has_key[other]:
+               mapping[other]
+            else:
+               placeholder = gensym[]
+               mapping[other] := placeholder
+               placeholder
+   
+         x -> raise Error.syntax.unknown_node[
+            message = "Unknown node"
+            location = ((x % .location) !! .unknown)
+            node = x
+         ]
+      result %<< ast
+
+   [extract ast, frz mapping]
+
+
+mstx = [a, b] -> a
+
+
+ast_compile = [ast] ->
+   [src, l, c, s, e] =
+      loc = ((ast % .location) !! false)
+      if loc:
+         [[l, c], _] = loc.linecol
+         Range [s, e] = loc.range
+         [loc.source, l, c, s, e]
+      else:
+         <> ["No loc", ast]
+         [false, 1, 0, 0, 0]
+
+   F =
+      Symbol s ->
+         s
+      #seq[*args] ->
+         ["#%vector".sym, *(V args each arg -> ast_compile[arg])]
+      #pair[a, b] ->
+         ["#%pair".sym, ast_compile[a], ast_compile[b]]
+      #send[f, #seq[*args]] ->
+         [ast_compile[f], *(V args each arg -> ast_compile[arg])]
+      #value[x] ->
+         ["#%quote".sym, x]
+      #declaring[vars, body] ->
+         ast_compile[body]
+      #begin[*args] ->
+         ["#%begin".sym, *(V args each arg -> ast_compile[arg])]
+      x ->
+         raise Error.syntax[message = "cannot compile", node = x]
+
+   result = (F ast)
+   mkstx[result, [src, l, c, s + 1, e - s]]
+
+
+mapping = {
+   (+) => .(+)
+   (-) => .(-)
+}
+
+
+compile = [text, url] ->
+   p = make_ir[text, url]
+   ;; [r, m] = extract_values[p, mapping]
+   ast_compile[p]
+
+
+;; main = [] ->
+;;   text = "1 + 2"
+;;   <> compile[text]
+;;   ;; p = make_ir[text]
+;;   ;; [r, m] = extract_values[p, mapping]
+;;   ;; let [@reprhook = ast_reprhook]:
+;;   ;;     <> p
+;;   ;;     <> r
+;;   ;;     <> ast_compile[p]
+;;   ;;     <> ast_compile[r]
+
+;; main[] !! e -> (<> e)
+
+
+provide:
+   compile

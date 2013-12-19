@@ -5,7 +5,7 @@ require:
 ;; SECTION
 ;; PRINTING
 
-(<>) = [_, x] ->
+(<>) = [irrelevant, x] ->
     toprint = repr[x]
     pre = String[Char[27]] ++ "[?0;7y+h "
     post = String[Char[7]]

@@ -442,7 +442,7 @@ parse = [txt, url = false] ->
     tokens = tokenize[src]
     rval = operator_parse[iter[tokens], formic_order, formic_finalize]
     match rval:
-        #seq[*things] -> #begin[*things]
+        #seq[*things] -> (#begin[*things] %<< rval)
         x -> x
 
 
